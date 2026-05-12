@@ -103,7 +103,7 @@ TOPICS:
 
 ```
 
-On the SERVERS part, you can put as many servers as you wish  (I have 3), you must specify their nodename (the name you want to use for them), their brand (currently ASUS or SUPERMICRO), their IP, IPMI USER, PASSWORD and the SDR values for the sensors you want to use, if you don't know the SDR values of the sensors you can use:
+On the SERVERS part, you can put as many servers as you wish  (I have 3), you must specify their nodename (the name you want to use for them), their brand (currently ASUS, SUPERMICRO or DELL), their IP, IPMI USER, PASSWORD and the SDR values for the sensors you want to use, if you don't know the SDR values of the sensors you can use:
 
 ipmitool -I lanplus -L User -H "server-ip" -U "ipmi_user" -P "server_pass" sdr elist full
 
@@ -172,6 +172,29 @@ PVCC_REF         | 3Eh | ok  |  7.62 | 1.26 Volts
 ```
 The fourth column has the SDR value
 
+or this (DELL 11th generation / iDRAC6):
+
+```
+Ambient Temp     | 0Eh | ok  |  7.1 | 20 degrees C
+FAN MOD 1A RPM   | 30h | ok  |  7.1 | 4920 RPM
+FAN MOD 1B RPM   | 31h | ok  |  7.1 | 4920 RPM
+FAN MOD 2A RPM   | 32h | ok  |  7.1 | 4920 RPM
+FAN MOD 2B RPM   | 33h | ok  |  7.1 | 4920 RPM
+FAN MOD 3A RPM   | 34h | ok  |  7.1 | 4920 RPM
+FAN MOD 3B RPM   | 35h | ok  |  7.1 | 4920 RPM
+FAN MOD 4A RPM   | 36h | ok  |  7.1 | 2400 RPM
+FAN MOD 4B RPM   | 37h | ok  |  7.1 | 2400 RPM
+FAN MOD 5A RPM   | 3Bh | ok  |  7.1 | 2400 RPM
+FAN MOD 5B RPM   | 3Ah | ok  |  7.1 | 2400 RPM
+Current          | 94h | ok  | 10.1 | 0.60 Amps
+Current          | 95h | ok  | 10.2 | 0.60 Amps
+Voltage          | 96h | ok  | 10.1 | 226 Volts
+Voltage          | 97h | ok  | 10.2 | 226 Volts
+System Level     | 98h | ok  |  7.1 | 287 Watts
+```
+
+For DELL servers, the fourth column is the SDR value and the first column is the SUBCLASS. Some DELL rows share the same SDR value, so configure both `VALUE` and `SUBCLASS`.
+
 
 to connect to your server and see all of the available sensors and their SDR value.
 
@@ -186,8 +209,8 @@ SERVERS:
         IPMI_PASSWORD: 'SERVER IPMI PASSWORD'
         SDRS:
             - SDR_TYPE: TYPE OF SDR (a number to match the dictionary of types in topics)
-              SDR_CLASS: ENTITY CLASS FOR HA (CAN BE temperature, temperaturef for fahrenheit, frequency, voltage or fan, units will be C, F, Hz, V or RPM accordingly)
-              SUBCLASS: IF IT'S AN ASUS PLEASE CHECK THE NAME FOR THE SENSOR ON IPMITOOL AND PUT IT HERE, for example Mb Temp
+              SDR_CLASS: ENTITY CLASS FOR HA (CAN BE temperature, temperaturef for fahrenheit, frequency, voltage, current, power or fan, units will be C, F, Hz, V, A, W or RPM accordingly)
+              SUBCLASS: IF IT'S AN ASUS OR DELL PLEASE CHECK THE NAME FOR THE SENSOR ON IPMITOOL AND PUT IT HERE, for example Mb Temp or Ambient Temp
               VALUE: SDR VALUE 
 
 ```
@@ -196,4 +219,3 @@ After configuring this, the first time you run the script it will create the dev
 
 
 The program generates a log that will grow to 10MiB and then cycle 2 times (that is, there will be no more than 30MiB of logs).
-

@@ -248,6 +248,12 @@ def sensor_sdr_initialization(server_config, guid_dict, sdr_topic_types, ha_sens
                     elif sdr_class == 'voltage':
                         unit = "V"
                         mqtt_payload = {"device" : device_mqtt_config, "device_class" : sdr_class, "name" : sdr_topic , "unique_id" : server_identifier + "_sdr" + sdr_type, 'unit_of_meas' : unit, "force_update" : True,  "retain" : True, "state_topic" : server_mqtt_state_topic }
+                    elif sdr_class == 'current':
+                        unit = "A"
+                        mqtt_payload = {"device" : device_mqtt_config, "device_class" : sdr_class, "name" : sdr_topic , "unique_id" : server_identifier + "_sdr" + sdr_type, 'unit_of_meas' : unit, "force_update" : True,  "retain" : True, "state_topic" : server_mqtt_state_topic }
+                    elif sdr_class == 'power':
+                        unit = "W"
+                        mqtt_payload = {"device" : device_mqtt_config, "device_class" : sdr_class, "name" : sdr_topic , "unique_id" : server_identifier + "_sdr" + sdr_type, 'unit_of_meas' : unit, "force_update" : True,  "retain" : True, "state_topic" : server_mqtt_state_topic }
                     elif sdr_class == 'fan':
                         unit = "RPM"
                         mqtt_payload = {"device" : device_mqtt_config, "device_class" : 'frequency', "name" : sdr_topic , "unique_id" : server_identifier + "_sdr" + sdr_type, 'unit_of_meas' : unit, "force_update" : True,  "retain" : True, "state_topic" : server_mqtt_state_topic }                    
@@ -375,6 +381,29 @@ def asus_ipmi_format(current_sdr, server_sdr_state):
         return sdr_value
     except Exception as exception:
         logging.critical(f'There was a problem getting SDR sensor states, specifically when trying to apply the formatting for ASUS servers. You get the following error: {exception} ')
+def numeric_sdr_value(sensor_reading):
+    sensor_reading = sensor_reading.strip()
+    if sensor_reading in ("", "Disabled", "No Reading"):
+        return ""
+    numeric_match = re.search(r'-?\d+(?:\.\d+)?', sensor_reading)
+    if numeric_match:
+        return numeric_match.group(0)
+    return ""
+def dell_ipmi_format(current_sdr, server_sdr_state):
+    try:
+        sdr_subclass = current_sdr['SUBCLASS']
+        server_sdr_values = server_sdr_state.split("\n")
+        server_sdr_values = list(filter(lambda x: x.split("|")[0].strip() == sdr_subclass if "|" in x else False, server_sdr_values))
+        if len(server_sdr_values) == 0:
+            logging.warning(f"The DELL SDR subclass {sdr_subclass} was not found in the IPMI output.")
+            return ""
+        server_sdr_values = server_sdr_values[0].split("|")
+        sdr_value = numeric_sdr_value(server_sdr_values[4])
+        if sdr_value == "":
+            logging.warning(f"IPMI returned an empty value for DELL SDR subclass {sdr_subclass}.")
+        return sdr_value
+    except Exception as exception:
+        logging.critical(f'There was a problem getting SDR sensor states, specifically when trying to apply the formatting for DELL servers. You get the following error: {exception} ')
 def get_sdr_data(current_sdr, server_ip, server_user, server_pass, sdr_topic_types, server_nodename, server):
         try:
             sdr_entity = current_sdr['VALUE']
@@ -416,6 +445,8 @@ def get_sdr_sensor_states(server_config, guid_dict, sdr_topic_types, ha_sensor_t
                         sdr_value = supermicro_ipmi_format(current_sdr, server_sdr_state)
                     elif server['BRAND'] == 'ASUS':
                         sdr_value = asus_ipmi_format(current_sdr, server_sdr_state)
+                    elif server['BRAND'] == 'DELL':
+                        sdr_value = dell_ipmi_format(current_sdr, server_sdr_state)
                     if sdr_value == 'No' or sdr_value == 'Di':
                         sdr_value = ""
                         logging.warning(f"IPMI returned an empty value for server {server_nodename} it is likely the server is OFF and so no sensor data is being collected.")
