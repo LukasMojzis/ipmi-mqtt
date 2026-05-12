@@ -154,6 +154,15 @@ class DellParserTest(unittest.TestCase):
 
         self.assertEqual(self.ipmi_mqtt.get_sdr_topic(current_sdr, {}), "Ambient_Temp")
 
+    def test_missing_topics_defaults_to_read_only_topics(self):
+        topic_dict, power_topic, switch_topic, sdr_topic_types, sdr_count = self.ipmi_mqtt.get_topics({})
+
+        self.assertEqual(topic_dict, {})
+        self.assertEqual(power_topic, "server_power_state")
+        self.assertEqual(switch_topic, "")
+        self.assertEqual(sdr_topic_types, {})
+        self.assertEqual(sdr_count, 0)
+
     def test_current_and_power_discovery_payloads_include_units(self):
         class PublishResult:
             def wait_for_publish(self):

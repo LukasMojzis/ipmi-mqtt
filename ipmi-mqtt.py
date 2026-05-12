@@ -168,12 +168,13 @@ def get_guid(server_config):
         logging.critical(f"There is an error generating your server's guid. The error is the following: {exception}")
 def get_topics(config):
     try:
-        topic_dict = config ['TOPICS']
+        topic_dict = config.get('TOPICS') or {}
         if 'POWER' in topic_dict: 
             power_topic = topic_dict['POWER']
             logging.debug("This is your power topic:" + str(power_topic))
         else:
-            logging.warning('There is no power topic in your YAML file.')
+            power_topic = "server_power_state"
+            logging.warning('There is no power topic in your YAML file, using server_power_state.')
         if 'SWITCH' in topic_dict: 
             switch_topic = topic_dict['SWITCH']
             logging.debug("This is your switch topic:" + str(switch_topic))

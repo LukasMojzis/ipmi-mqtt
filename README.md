@@ -87,7 +87,7 @@ MQTT:
 
 
     
-A topics configuration, which can have one POWER topic, an optional SWITCH topic and all of the SDRs (the name of the values that will be given to HA on the MQTT Broker), you must put one SDR type per type of SDR as you will reference them on the server configuration part.
+A topics configuration, which can have one POWER topic, an optional SWITCH topic and all of the SDRs (the name of the values that will be given to HA on the MQTT Broker), you must put one SDR type per type of SDR as you will reference them on the server configuration part. If `TOPICS` is omitted, read-only power state and supported sensor discovery are enabled; power control remains disabled unless `SWITCH` is explicitly configured.
 
 
 
