@@ -16,6 +16,22 @@ TOPICS:
         2: 'server_system_temp'
         3:  'server_cpu_fan'
         4:  'server_bmc_voltage'
+        5: 'dell_ambient_temp'
+        6: 'dell_fan_mod_1a_rpm'
+        7: 'dell_fan_mod_1b_rpm'
+        8: 'dell_fan_mod_2a_rpm'
+        9: 'dell_fan_mod_2b_rpm'
+        10: 'dell_fan_mod_3a_rpm'
+        11: 'dell_fan_mod_3b_rpm'
+        12: 'dell_fan_mod_4a_rpm'
+        13: 'dell_fan_mod_4b_rpm'
+        14: 'dell_fan_mod_5a_rpm'
+        15: 'dell_fan_mod_5b_rpm'
+        16: 'dell_psu_1_current'
+        17: 'dell_psu_2_current'
+        18: 'dell_psu_1_voltage'
+        19: 'dell_psu_2_voltage'
+        20: 'dell_system_power'
 SERVERS:
       - IPMI_NODENAME: XXXXX 
         BRAND: ASUS #THIS IS AN ASUS EXAMPLE
@@ -47,4 +63,73 @@ SERVERS:
             - SDR_TYPE: XXXX
               VALUE: XXX
               SDR_CLASS: XXXX
-
+      - IPMI_NODENAME: DELL-IDRAC6
+        BRAND: DELL #THIS IS A DELL 11TH GENERATION / iDRAC6 EXAMPLE
+        IPMI_IP: 192.168.XXX.XXX
+        IPMI_USER: 'SERVER IPMI USER'
+        IPMI_PASSWORD: 'SERVER IPMI PASSWORD'
+        SDRS:
+            - SDR_TYPE: 5
+              SDR_CLASS: temperature
+              SUBCLASS: Ambient Temp
+              VALUE: 7.1
+            - SDR_TYPE: 6
+              SDR_CLASS: fan
+              SUBCLASS: FAN MOD 1A RPM
+              VALUE: 7.1
+            - SDR_TYPE: 7
+              SDR_CLASS: fan
+              SUBCLASS: FAN MOD 1B RPM
+              VALUE: 7.1
+            - SDR_TYPE: 8
+              SDR_CLASS: fan
+              SUBCLASS: FAN MOD 2A RPM
+              VALUE: 7.1
+            - SDR_TYPE: 9
+              SDR_CLASS: fan
+              SUBCLASS: FAN MOD 2B RPM
+              VALUE: 7.1
+            - SDR_TYPE: 10
+              SDR_CLASS: fan
+              SUBCLASS: FAN MOD 3A RPM
+              VALUE: 7.1
+            - SDR_TYPE: 11
+              SDR_CLASS: fan
+              SUBCLASS: FAN MOD 3B RPM
+              VALUE: 7.1
+            - SDR_TYPE: 12
+              SDR_CLASS: fan
+              SUBCLASS: FAN MOD 4A RPM
+              VALUE: 7.1
+            - SDR_TYPE: 13
+              SDR_CLASS: fan
+              SUBCLASS: FAN MOD 4B RPM
+              VALUE: 7.1
+            - SDR_TYPE: 14
+              SDR_CLASS: fan
+              SUBCLASS: FAN MOD 5A RPM
+              VALUE: 7.1
+            - SDR_TYPE: 15
+              SDR_CLASS: fan
+              SUBCLASS: FAN MOD 5B RPM
+              VALUE: 7.1
+            - SDR_TYPE: 16
+              SDR_CLASS: current
+              SUBCLASS: Current
+              VALUE: 10.1
+            - SDR_TYPE: 17
+              SDR_CLASS: current
+              SUBCLASS: Current
+              VALUE: 10.2
+            - SDR_TYPE: 18
+              SDR_CLASS: voltage
+              SUBCLASS: Voltage
+              VALUE: 10.1
+            - SDR_TYPE: 19
+              SDR_CLASS: voltage
+              SUBCLASS: Voltage
+              VALUE: 10.2
+            - SDR_TYPE: 20
+              SDR_CLASS: power
+              SUBCLASS: System Level
+              VALUE: 7.1
