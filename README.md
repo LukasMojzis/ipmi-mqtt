@@ -3,7 +3,37 @@ Python app for IPMI states to be sent to Home Assistant via MQTT
 
 This is a simple application that you can either run continuously in a predefined interval, run once (-o), use just to create your entities in home assistant through mqtt (-i) or run continuously as a daemon (-d). The scripts uses ipmi-tool to get IPMI sensor data (executing IPMITOOLs through the shell) from one or many servers and then republishes that data to MQTT in a format that Home Assistant automatically recognizes as devices, each with its own entities and switches so that the servers can be turned On or Off through IPMI.
 
-If you want to use it as a service in linux or FreeBSD you can check the readme on the FreeBSD-service folder or the systemd-service folder in the repo and follow those instructions too. You can also install it using the docker image available on dockerhub (https://hub.docker.com/r/arankwende/ipmi-mqtt).
+If you want to use it as a service in linux or FreeBSD you can check the readme on the FreeBSD-service folder or the systemd-service folder in the repo and follow those instructions too. You can also run it with the container image published to GitHub Container Registry.
+
+## Docker
+
+The container image is published as:
+
+```
+ghcr.io/lukasmojzis/ipmi-mqtt:latest
+```
+
+Create your configuration file before starting the container:
+
+```
+cp "config/config - example.yaml" config/config.yaml
+```
+
+Edit `config/config.yaml`, then start it with Docker Compose:
+
+```
+docker compose up -d
+```
+
+Or run the image directly:
+
+```
+docker run --rm \
+  -v "$PWD/config/config.yaml:/app/config/config.yaml:ro" \
+  ghcr.io/lukasmojzis/ipmi-mqtt:latest
+```
+
+The container expects its configuration at `/app/config/config.yaml`.
 
 The script requires:
 
@@ -37,7 +67,7 @@ Once installed, just copy this repo (you can use git clone), complete the YAML f
 That's it. You can execute it with -i in order to just execute the config payload being sent to the MQTT topic, or -d in order to have the script run as a daemon. You can also set a time (in seconds) inside the YAML file for the script to run in a loop and get new sensor values in that time period or simply run with -o to run one time only. 
 
 
-All of the configuration is done via a config.yaml file, an example file is provided, you need to rename it to config.yml.
+All of the configuration is done via a config.yaml file, an example file is provided, you need to rename it to config.yaml.
 
 It must contain:
 
@@ -166,5 +196,4 @@ After configuring this, the first time you run the script it will create the dev
 
 
 The program generates a log that will grow to 10MiB and then cycle 2 times (that is, there will be no more than 30MiB of logs).
-
 

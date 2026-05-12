@@ -1,7 +1,15 @@
-#Dockerignore to ignor config files on image build
-*/config
-freebsd-service
-systemd-service
-*.md
-*.yaml
-*/.vscode
+# Keep local state and secrets out of the image context.
+.git
+.github
+.vscode
+__pycache__/
+*.py[cod]
+*.log
+
+config/config.yaml
+config/ipmi-mqtt.log
+
+freebsd-service/
+systemd-service/
+compose.yaml
+README.md
