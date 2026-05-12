@@ -1,9 +1,11 @@
 import importlib.util
 import json
 import pathlib
+import subprocess
 import sys
 import types
 import unittest
+from unittest import mock
 
 
 DELL_SDR_OUTPUT = """Temp             | 01h | ns  |  3.1 | Disabled
@@ -91,12 +93,71 @@ class DellParserTest(unittest.TestCase):
 
         self.assertEqual(self.ipmi_mqtt.dell_ipmi_format(current_sdr, DELL_SDR_OUTPUT), "")
 
+    def test_dell_parser_uses_entity_value_for_duplicate_sensor_names(self):
+        current_sdr = {"SDR_CLASS": "voltage", "SUBCLASS": "Voltage", "VALUE": "10.2"}
+
+        self.assertEqual(self.ipmi_mqtt.dell_ipmi_format(current_sdr, DELL_SDR_OUTPUT), "226")
+
     def test_numeric_sdr_value_preserves_decimals(self):
         self.assertEqual(self.ipmi_mqtt.numeric_sdr_value("0.60 Amps"), "0.60")
 
+    def test_mqtt_safe_identifier_normalizes_guid_for_topic_ids(self):
+        self.assertEqual(
+            self.ipmi_mqtt.mqtt_safe_identifier("44454c4c-3200-1046-8033-b2c04f39354a"),
+            "44454c4c-3200-1046-8033-b2c04f39354a",
+        )
+        self.assertEqual(
+            self.ipmi_mqtt.mqtt_safe_identifier(" guid/with#+BAD\x00chars "),
+            "guid_with_BAD_chars",
+        )
+
+    def test_get_guid_uses_sanitized_nodename_as_entity_prefix(self):
+        server_config = [{
+            "IPMI_NODENAME": "Node 01 / DELL-IDRAC6",
+            "IPMI_IP": "192.0.2.10",
+            "IPMI_USER": "root",
+            "IPMI_PASSWORD": "secret",
+        }]
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=b"System GUID  : 44454c4c-3200-1046-8033-b2c04f39354a\n",
+            stderr=b"",
+        )
+
+        with mock.patch.object(self.ipmi_mqtt.subprocess, "run", return_value=completed):
+            guid_dict, complete_guid_dict = self.ipmi_mqtt.get_guid(server_config)
+
+        self.assertEqual(guid_dict["192.0.2.10"], "Node_01_DELL-IDRAC6")
+        self.assertIn("Node_01_DELL-IDRAC6", complete_guid_dict)
+
+    def test_dell_elist_autodiscovery_builds_visible_sdrs(self):
+        sdrs = self.ipmi_mqtt.dell_sdrs_from_elist(DELL_SDR_OUTPUT)
+        topics = {sdr["SDR_TOPIC"]: sdr for sdr in sdrs}
+
+        self.assertIn("Ambient Temp", topics)
+        self.assertIn("FAN MOD 1A RPM", topics)
+        self.assertIn("Current_10.1", topics)
+        self.assertIn("Current_10.2", topics)
+        self.assertIn("Voltage_10.1", topics)
+        self.assertIn("Voltage_10.2", topics)
+        self.assertIn("System Level", topics)
+        self.assertNotIn("Temp", topics)
+        self.assertEqual(topics["Ambient Temp"]["SDR_CLASS"], "temperature")
+        self.assertEqual(topics["FAN MOD 1A RPM"]["SDR_CLASS"], "fan")
+        self.assertEqual(topics["Current_10.1"]["SDR_CLASS"], "current")
+        self.assertEqual(topics["Voltage_10.1"]["SDR_CLASS"], "voltage")
+        self.assertEqual(topics["System Level"]["SDR_CLASS"], "power")
+
+    def test_get_sdr_topic_derives_name_when_no_topic_map_exists(self):
+        current_sdr = {"SUBCLASS": "Ambient Temp", "VALUE": "7.1", "SDR_CLASS": "temperature"}
+
+        self.assertEqual(self.ipmi_mqtt.get_sdr_topic(current_sdr, {}), "Ambient_Temp")
+
     def test_current_and_power_discovery_payloads_include_units(self):
         class PublishResult:
-            wait_for_publish = True
+            def wait_for_publish(self):
+                return True
 
         class Client:
             def __init__(self):
@@ -129,13 +190,38 @@ class DellParserTest(unittest.TestCase):
         )
 
         payloads = {topic: payload for topic, payload, _qos, _retain in client.published}
-        current_payload = payloads["homeassistant/sensor/server-guid_dell_psu_current/config"]
-        power_payload = payloads["homeassistant/sensor/server-guid_dell_system_power/config"]
+        current_payload = payloads["homeassistant/sensor/server-guid/dell_psu_current/config"]
+        power_payload = payloads["homeassistant/sensor/server-guid/dell_system_power/config"]
 
         self.assertEqual(current_payload["device_class"], "current")
+        self.assertEqual(current_payload["name"], "dell_psu_current")
+        self.assertEqual(current_payload["unique_id"], "server-guid_sdr_dell_psu_current")
         self.assertEqual(current_payload["unit_of_meas"], "A")
         self.assertEqual(power_payload["device_class"], "power")
         self.assertEqual(power_payload["unit_of_meas"], "W")
+
+    def test_switch_discovery_is_opt_in(self):
+        class Client:
+            def __init__(self):
+                self.published = []
+
+            def publish(self, topic, payload, qos=0, retain=False):
+                self.published.append((topic, payload, qos, retain))
+
+        client = Client()
+
+        self.ipmi_mqtt.switch_sdr_initialization(
+            [{"IPMI_NODENAME": "Node", "BRAND": "DELL", "IPMI_IP": "192.0.2.10"}],
+            {"192.0.2.10": "Node"},
+            "homeassistant/switch",
+            "",
+            "homeassistant/binary_sensor",
+            "server_power_state",
+            client,
+            "mqtt.example",
+        )
+
+        self.assertEqual(client.published, [])
 
 
 if __name__ == "__main__":

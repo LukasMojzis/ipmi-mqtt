@@ -87,14 +87,14 @@ MQTT:
 
 
     
-A topics configuration, which can have one POWER topic and one SWITCH topic and all of the SDRs (the name of the values that will be given to HA on the MQTT Broker), you must put one SDR type per type of SDR as you will reference them on the server configuration part.
+A topics configuration, which can have one POWER topic, an optional SWITCH topic and all of the SDRs (the name of the values that will be given to HA on the MQTT Broker), you must put one SDR type per type of SDR as you will reference them on the server configuration part.
 
 
 
 ```
 TOPICS:
     POWER: 'THE NAME YOU WILL GIVE TO THE POWER TOPIC'
-    SWITCH: 'THE NAME YOU WILL GIVE TO THE SWITCH TOPIC'
+    #SWITCH: 'THE NAME YOU WILL GIVE TO THE SWITCH TOPIC'
     SDR_TYPES:
         1: 'server_cpu_temp'
         2: 'server_system_temp'
@@ -195,6 +195,8 @@ System Level     | 98h | ok  |  7.1 | 287 Watts
 
 For DELL servers, the fourth column is the SDR value and the first column is the SUBCLASS. Some DELL rows share the same SDR value, so configure both `VALUE` and `SUBCLASS`.
 
+For DELL 11th generation / iDRAC6 servers, `SDRS` is optional. If you configure only `IPMI_NODENAME`, `BRAND`, `IPMI_IP`, `IPMI_USER`, and `IPMI_PASSWORD`, the script publishes every visible numeric sensor from `sdr elist full`. The MQTT node path is derived from `IPMI_NODENAME`, so choose a node name that is unique in your infrastructure. Names are published as configured or discovered; MQTT path segments and Home Assistant IDs are only sanitized enough to be valid. Add `SDRS` only when you want to limit or override the published sensors.
+
 
 to connect to your server and see all of the available sensors and their SDR value.
 
@@ -207,7 +209,7 @@ SERVERS:
         IPMI_IP: SERVER IPMI IP
         IPMI_USER: 'SERVER IPMI USER'
         IPMI_PASSWORD: 'SERVER IPMI PASSWORD'
-        SDRS:
+        SDRS: # OPTIONAL FOR DELL 11TH GENERATION / iDRAC6; REQUIRED FOR ASUS AND SUPERMICRO
             - SDR_TYPE: TYPE OF SDR (a number to match the dictionary of types in topics)
               SDR_CLASS: ENTITY CLASS FOR HA (CAN BE temperature, temperaturef for fahrenheit, frequency, voltage, current, power or fan, units will be C, F, Hz, V, A, W or RPM accordingly)
               SUBCLASS: IF IT'S AN ASUS OR DELL PLEASE CHECK THE NAME FOR THE SENSOR ON IPMITOOL AND PUT IT HERE, for example Mb Temp or Ambient Temp
