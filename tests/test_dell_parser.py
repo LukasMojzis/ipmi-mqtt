@@ -258,6 +258,50 @@ class DellParserTest(unittest.TestCase):
         self.assertEqual(voltage_payload["unique_id"], "DELL-IDRAC6_sdr_Voltage_10_1")
         self.assertEqual(voltage_payload["state_class"], "measurement")
 
+    def test_fan_rpm_discovery_does_not_use_frequency_device_class(self):
+        class PublishResult:
+            def wait_for_publish(self):
+                return True
+
+        class Client:
+            def __init__(self):
+                self.published = []
+
+            def publish(self, topic, payload, qos=0, retain=False):
+                self.published.append((topic, json.loads(payload), qos, retain))
+                return PublishResult()
+
+        client = Client()
+        server_config = [{
+            "IPMI_NODENAME": "DELL-IDRAC6",
+            "BRAND": "DELL",
+            "IPMI_IP": "192.0.2.10",
+        }]
+
+        with mock.patch.object(self.ipmi_mqtt, "discover_dell_sdrs", return_value=[{
+            "SDR_TYPE": "FAN MOD 1A RPM",
+            "SDR_TOPIC": "FAN MOD 1A RPM",
+            "SDR_NAME": "FAN MOD 1A RPM",
+            "SDR_CLASS": "fan",
+            "SUBCLASS": "FAN MOD 1A RPM",
+            "VALUE": "7.1",
+        }]):
+            self.ipmi_mqtt.sensor_sdr_initialization(
+                server_config,
+                {"192.0.2.10": "DELL-IDRAC6"},
+                {},
+                "homeassistant/sensor",
+                client,
+                "mqtt.example",
+            )
+
+        payloads = {topic: payload for topic, payload, _qos, _retain in client.published}
+        fan_payload = payloads["homeassistant/sensor/DELL-IDRAC6/FAN_MOD_1A_RPM/config"]
+
+        self.assertNotIn("device_class", fan_payload)
+        self.assertEqual(fan_payload["unit_of_meas"], "RPM")
+        self.assertEqual(fan_payload["state_class"], "measurement")
+
     def test_power_state_name_is_human_readable(self):
         class PublishResult:
             def wait_for_publish(self):
