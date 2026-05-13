@@ -392,7 +392,7 @@ def sensor_sdr_initialization(server_config, guid_dict, sdr_topic_types, ha_sens
                         mqtt_payload = {"device" : device_mqtt_config, "device_class" : sdr_class, "name" : sdr_name, "unique_id" : unique_id, 'unit_of_meas' : unit, "state_class" : "measurement", "force_update" : True,  "retain" : True, "state_topic" : server_mqtt_state_topic }
                     elif sdr_class == 'fan':
                         unit = "RPM"
-                        mqtt_payload = {"device" : device_mqtt_config, "name" : sdr_name , "unique_id" : unique_id, 'unit_of_meas' : unit, "state_class" : "measurement", "force_update" : True,  "retain" : True, "state_topic" : server_mqtt_state_topic }
+                        mqtt_payload = {"device" : device_mqtt_config, "name" : sdr_name , "unique_id" : unique_id, 'unit_of_meas' : unit, "force_update" : True,  "retain" : True, "state_topic" : server_mqtt_state_topic }
                     elif sdr_class == 'frequency':
                         unit = "Hz"
                         mqtt_payload = {"device" : device_mqtt_config, "device_class" : sdr_class, "name" : sdr_name , "unique_id" : unique_id, 'unit_of_meas' : unit, "state_class" : "measurement", "force_update" : True, "retain" : True, "state_topic" : server_mqtt_state_topic }

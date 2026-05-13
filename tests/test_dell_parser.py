@@ -299,8 +299,8 @@ class DellParserTest(unittest.TestCase):
         fan_payload = payloads["homeassistant/sensor/DELL-IDRAC6/FAN_MOD_1A_RPM/config"]
 
         self.assertNotIn("device_class", fan_payload)
+        self.assertNotIn("state_class", fan_payload)
         self.assertEqual(fan_payload["unit_of_meas"], "RPM")
-        self.assertEqual(fan_payload["state_class"], "measurement")
 
     def test_power_state_name_is_human_readable(self):
         class PublishResult:
