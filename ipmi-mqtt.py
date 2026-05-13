@@ -104,13 +104,13 @@ def switch_subscribe(topic_dict, server_config, guid_dict, ha_switch_topic, swit
 def on_subscribe(client, userdata, mid, granted_qos):
     logging.info(f"The server has acknowledged your subscription requested on mid {mid} with qos {granted_qos}")
 def mqtt_safe_identifier(identifier):
-    identifier = re.sub(r'[\x00-\x1f\x7f/+#]+', ' ', str(identifier).strip())
-    identifier = re.sub(r' +', ' ', identifier).strip()
+    identifier = re.sub(r'[^A-Za-z0-9_-]+', '_', str(identifier).strip())
+    identifier = re.sub(r'_+', '_', identifier).strip('_')
     return identifier
 def mqtt_path_segment(identifier):
     return mqtt_safe_identifier(identifier)
 def ha_unique_id(*parts):
-    return mqtt_safe_identifier(" ".join(str(part) for part in parts if str(part) != ""))
+    return mqtt_safe_identifier("_".join(str(part) for part in parts if str(part) != ""))
 def mqtt_display_name(value):
     value = str(value).strip()
     if value == "":
