@@ -377,25 +377,25 @@ def sensor_sdr_initialization(server_config, guid_dict, sdr_topic_types, ha_sens
                     server_mqtt_state_topic = ha_sensor_topic + "/" + server_identifier + "/" + sdr_topic + "/" + "state"
                     if sdr_class == 'temperature':
                         unit = "°C"
-                        mqtt_payload = {"device" : device_mqtt_config, "device_class" : sdr_class, "name" : sdr_name , "unique_id" : unique_id, "unit_of_meas" : unit, "force_update" : True, "retain" : True, "state_topic" : server_mqtt_state_topic }
+                        mqtt_payload = {"device" : device_mqtt_config, "device_class" : sdr_class, "name" : sdr_name , "unique_id" : unique_id, "unit_of_meas" : unit, "state_class" : "measurement", "force_update" : True, "retain" : True, "state_topic" : server_mqtt_state_topic }
                     elif sdr_class == 'temperaturef':
                         unit = "°F"
-                        mqtt_payload = {"device" : device_mqtt_config, "device_class" : sdr_class, "name" : sdr_name , "unique_id" : unique_id, "unit_of_meas" : unit, "force_update" : True, "retain" : True, "state_topic" : server_mqtt_state_topic }
+                        mqtt_payload = {"device" : device_mqtt_config, "device_class" : sdr_class, "name" : sdr_name , "unique_id" : unique_id, "unit_of_meas" : unit, "state_class" : "measurement", "force_update" : True, "retain" : True, "state_topic" : server_mqtt_state_topic }
                     elif sdr_class == 'voltage':
                         unit = "V"
-                        mqtt_payload = {"device" : device_mqtt_config, "device_class" : sdr_class, "name" : sdr_name , "unique_id" : unique_id, 'unit_of_meas' : unit, "force_update" : True,  "retain" : True, "state_topic" : server_mqtt_state_topic }
+                        mqtt_payload = {"device" : device_mqtt_config, "device_class" : sdr_class, "name" : sdr_name , "unique_id" : unique_id, 'unit_of_meas' : unit, "state_class" : "measurement", "force_update" : True,  "retain" : True, "state_topic" : server_mqtt_state_topic }
                     elif sdr_class == 'current':
                         unit = "A"
-                        mqtt_payload = {"device" : device_mqtt_config, "device_class" : sdr_class, "name" : sdr_name , "unique_id" : unique_id, 'unit_of_meas' : unit, "force_update" : True,  "retain" : True, "state_topic" : server_mqtt_state_topic }
+                        mqtt_payload = {"device" : device_mqtt_config, "device_class" : sdr_class, "name" : sdr_name , "unique_id" : unique_id, 'unit_of_meas' : unit, "state_class" : "measurement", "force_update" : True,  "retain" : True, "state_topic" : server_mqtt_state_topic }
                     elif sdr_class == 'power':
                         unit = "W"
-                        mqtt_payload = {"device" : device_mqtt_config, "device_class" : sdr_class, "name" : sdr_name, "unique_id" : unique_id, 'unit_of_meas' : unit, "force_update" : True,  "retain" : True, "state_topic" : server_mqtt_state_topic }
+                        mqtt_payload = {"device" : device_mqtt_config, "device_class" : sdr_class, "name" : sdr_name, "unique_id" : unique_id, 'unit_of_meas' : unit, "state_class" : "measurement", "force_update" : True,  "retain" : True, "state_topic" : server_mqtt_state_topic }
                     elif sdr_class == 'fan':
                         unit = "RPM"
-                        mqtt_payload = {"device" : device_mqtt_config, "device_class" : 'frequency', "name" : sdr_name , "unique_id" : unique_id, 'unit_of_meas' : unit, "force_update" : True,  "retain" : True, "state_topic" : server_mqtt_state_topic }
+                        mqtt_payload = {"device" : device_mqtt_config, "device_class" : 'frequency', "name" : sdr_name , "unique_id" : unique_id, 'unit_of_meas' : unit, "state_class" : "measurement", "force_update" : True,  "retain" : True, "state_topic" : server_mqtt_state_topic }
                     elif sdr_class == 'frequency':
                         unit = "Hz"
-                        mqtt_payload = {"device" : device_mqtt_config, "device_class" : sdr_class, "name" : sdr_name , "unique_id" : unique_id, 'unit_of_meas' : unit, "force_update" : True, "retain" : True, "state_topic" : server_mqtt_state_topic }
+                        mqtt_payload = {"device" : device_mqtt_config, "device_class" : sdr_class, "name" : sdr_name , "unique_id" : unique_id, 'unit_of_meas' : unit, "state_class" : "measurement", "force_update" : True, "retain" : True, "state_topic" : server_mqtt_state_topic }
                     else:
                         logging.warning("no unit defined for this type")
                         mqtt_payload = {"device" : device_mqtt_config,  "name" : sdr_name , "unique_id" : unique_id,  "force_update" : True, "retain" : True, "state_topic" : server_mqtt_state_topic }

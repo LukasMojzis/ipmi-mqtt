@@ -209,8 +209,10 @@ class DellParserTest(unittest.TestCase):
         self.assertEqual(current_payload["name"], "dell_psu_current")
         self.assertEqual(current_payload["unique_id"], "server-guid_sdr_dell_psu_current")
         self.assertEqual(current_payload["unit_of_meas"], "A")
+        self.assertEqual(current_payload["state_class"], "measurement")
         self.assertEqual(power_payload["device_class"], "power")
         self.assertEqual(power_payload["unit_of_meas"], "W")
+        self.assertEqual(power_payload["state_class"], "measurement")
 
     def test_discovered_duplicate_sensor_uses_human_display_name(self):
         class PublishResult:
@@ -254,6 +256,7 @@ class DellParserTest(unittest.TestCase):
 
         self.assertEqual(voltage_payload["name"], "Voltage")
         self.assertEqual(voltage_payload["unique_id"], "DELL-IDRAC6_sdr_Voltage_10_1")
+        self.assertEqual(voltage_payload["state_class"], "measurement")
 
     def test_power_state_name_is_human_readable(self):
         class PublishResult:
