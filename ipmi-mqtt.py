@@ -14,6 +14,8 @@ import daemon
 import logging
 import logging.handlers as handlers
 import re
+
+dell_discovery_cache = {}
 # First we define all the functions
 # YAML config loading function
 def load_config():
@@ -138,11 +140,64 @@ def sdr_display_name(sensor_name, sdr_class):
     if domain_name != "" and not any(token in lower_name for token in domain_tokens):
         return f"{sensor_name} {domain_name}"
     return sensor_name
+def sensor_icon_for_class(sdr_class):
+    icons = {
+        "temperature": "mdi:thermometer",
+        "temperaturef": "mdi:thermometer",
+        "voltage": "mdi:sine-wave",
+        "current": "mdi:current-ac",
+        "power": "mdi:flash",
+        "fan": "mdi:fan",
+        "frequency": "mdi:sine-wave",
+    }
+    return icons.get(str(sdr_class), "")
+def sensor_payload_for_class(device_mqtt_config, sdr_name, unique_id, sdr_class, state_topic):
+    payload = {
+        "device": device_mqtt_config,
+        "name": sdr_name,
+        "unique_id": unique_id,
+        "force_update": True,
+        "retain": True,
+        "state_topic": state_topic,
+    }
+    icon = sensor_icon_for_class(sdr_class)
+    if icon != "":
+        payload["icon"] = icon
+    if sdr_class == "temperature":
+        payload["device_class"] = "temperature"
+        payload["unit_of_meas"] = "°C"
+        payload["state_class"] = "measurement"
+    elif sdr_class == "temperaturef":
+        payload["device_class"] = "temperature"
+        payload["unit_of_meas"] = "°F"
+        payload["state_class"] = "measurement"
+    elif sdr_class == "voltage":
+        payload["device_class"] = "voltage"
+        payload["unit_of_meas"] = "V"
+        payload["state_class"] = "measurement"
+    elif sdr_class == "current":
+        payload["device_class"] = "current"
+        payload["unit_of_meas"] = "A"
+        payload["state_class"] = "measurement"
+    elif sdr_class == "power":
+        payload["device_class"] = "power"
+        payload["unit_of_meas"] = "W"
+        payload["state_class"] = "measurement"
+    elif sdr_class == "fan":
+        payload["unit_of_meas"] = "RPM"
+    elif sdr_class == "frequency":
+        payload["device_class"] = "frequency"
+        payload["unit_of_meas"] = "Hz"
+        payload["state_class"] = "measurement"
+    return payload
 def mqtt_publish_dict(mqtt_dict, client, mqtt_ip):
     for x, y in mqtt_dict.items():
         publish_result = client.publish(str(x), str(y), qos=2, retain=True)
         if hasattr(publish_result, "wait_for_publish"):
-            publish_result.wait_for_publish()
+            try:
+                publish_result.wait_for_publish()
+            except RuntimeError as exception:
+                logging.warning(f"MQTT publish to {x} did not complete cleanly: {exception}")
         logging.debug("You have sent the following payload: " + str(y))
         logging.debug("To the following topic: " + str(x))
         logging.debug("On the server with IP: " + mqtt_ip)
@@ -291,20 +346,32 @@ def dell_sdrs_from_elist(server_sdr_state):
             "VALUE": sdr_row["VALUE"],
         })
     return sdrs
-def discover_dell_sdrs(server):
+def get_dell_elist_full(server):
     server_ip = str(server['IPMI_IP'])
     server_user = str(server['IPMI_USER'])
     server_pass = str(server['IPMI_PASSWORD'])
     ipmi_sdr_command = f"ipmitool -I lanplus -L User -H \"{server_ip}\" -U \"{server_user}\" -P \"{server_pass}\" sdr elist full"
     ipmi_command_subprocess = subprocess.run(ipmi_sdr_command, shell=True, capture_output=True)
-    server_sdr_state = ipmi_command_subprocess.stdout.decode("utf-8").strip()
-    return dell_sdrs_from_elist(server_sdr_state)
+    return ipmi_command_subprocess.stdout.decode("utf-8").strip()
+def discover_dell_sdrs(server):
+    return dell_sdrs_from_elist(get_dell_elist_full(server))
 def get_server_sdrs(server):
     if 'SDRS' in server and server['SDRS']:
         return server['SDRS']
     if server['BRAND'] == 'DELL':
         return discover_dell_sdrs(server)
     return []
+def dell_matching_row(current_sdr, server_sdr_state):
+    sdr_subclass = current_sdr['SUBCLASS']
+    sdr_entity = str(current_sdr.get('VALUE', '')).strip()
+    server_sdr_values = server_sdr_state.split("\n")
+    server_sdr_values = list(filter(lambda x: x.split("|")[0].strip() == sdr_subclass if "|" in x else False, server_sdr_values))
+    if sdr_entity != "":
+        server_sdr_values = list(filter(lambda x: len(x.split("|")) > 3 and x.split("|")[3].strip() == sdr_entity, server_sdr_values))
+    if len(server_sdr_values) == 0:
+        logging.warning(f"The DELL SDR subclass {sdr_subclass} was not found in the IPMI output.")
+        return None
+    return server_sdr_values[0].split("|")
 def power_sdr_initialization(server_config, guid_dict, ha_binary_topic, power_topic, client, mqtt_ip):
     try:    
         if power_topic == "":
@@ -357,6 +424,9 @@ def switch_sdr_initialization(server_config, guid_dict, ha_switch_topic, switch_
 def sensor_sdr_initialization(server_config, guid_dict, sdr_topic_types, ha_sensor_topic, client, mqtt_ip):
     try:    
         for server in server_config:
+            if server['BRAND'] == 'DELL':
+                logging.info(f"DELL sensor discovery is handled during collection for {server['IPMI_NODENAME']}.")
+                continue
             server_nodename = server['IPMI_NODENAME']
             server_ip = str(server['IPMI_IP'])
             server_identifier = str("".join([guid_dict[server_ip]]))
@@ -375,35 +445,56 @@ def sensor_sdr_initialization(server_config, guid_dict, sdr_topic_types, ha_sens
                     unique_id = ha_unique_id(server_identifier, "sdr", sdr_type)
                     server_mqtt_config_topic = ha_sensor_topic + "/" + server_identifier + "/" + sdr_topic + "/" + "config"
                     server_mqtt_state_topic = ha_sensor_topic + "/" + server_identifier + "/" + sdr_topic + "/" + "state"
-                    if sdr_class == 'temperature':
-                        unit = "°C"
-                        mqtt_payload = {"device" : device_mqtt_config, "device_class" : sdr_class, "name" : sdr_name , "unique_id" : unique_id, "unit_of_meas" : unit, "state_class" : "measurement", "force_update" : True, "retain" : True, "state_topic" : server_mqtt_state_topic }
-                    elif sdr_class == 'temperaturef':
-                        unit = "°F"
-                        mqtt_payload = {"device" : device_mqtt_config, "device_class" : sdr_class, "name" : sdr_name , "unique_id" : unique_id, "unit_of_meas" : unit, "state_class" : "measurement", "force_update" : True, "retain" : True, "state_topic" : server_mqtt_state_topic }
-                    elif sdr_class == 'voltage':
-                        unit = "V"
-                        mqtt_payload = {"device" : device_mqtt_config, "device_class" : sdr_class, "name" : sdr_name , "unique_id" : unique_id, 'unit_of_meas' : unit, "state_class" : "measurement", "force_update" : True,  "retain" : True, "state_topic" : server_mqtt_state_topic }
-                    elif sdr_class == 'current':
-                        unit = "A"
-                        mqtt_payload = {"device" : device_mqtt_config, "device_class" : sdr_class, "name" : sdr_name , "unique_id" : unique_id, 'unit_of_meas' : unit, "state_class" : "measurement", "force_update" : True,  "retain" : True, "state_topic" : server_mqtt_state_topic }
-                    elif sdr_class == 'power':
-                        unit = "W"
-                        mqtt_payload = {"device" : device_mqtt_config, "device_class" : sdr_class, "name" : sdr_name, "unique_id" : unique_id, 'unit_of_meas' : unit, "state_class" : "measurement", "force_update" : True,  "retain" : True, "state_topic" : server_mqtt_state_topic }
-                    elif sdr_class == 'fan':
-                        unit = "RPM"
-                        mqtt_payload = {"device" : device_mqtt_config, "name" : sdr_name , "unique_id" : unique_id, 'unit_of_meas' : unit, "force_update" : True,  "retain" : True, "state_topic" : server_mqtt_state_topic }
-                    elif sdr_class == 'frequency':
-                        unit = "Hz"
-                        mqtt_payload = {"device" : device_mqtt_config, "device_class" : sdr_class, "name" : sdr_name , "unique_id" : unique_id, 'unit_of_meas' : unit, "state_class" : "measurement", "force_update" : True, "retain" : True, "state_topic" : server_mqtt_state_topic }
-                    else:
-                        logging.warning("no unit defined for this type")
-                        mqtt_payload = {"device" : device_mqtt_config,  "name" : sdr_name , "unique_id" : unique_id,  "force_update" : True, "retain" : True, "state_topic" : server_mqtt_state_topic }
+                    mqtt_payload = sensor_payload_for_class(device_mqtt_config, sdr_name, unique_id, sdr_class, server_mqtt_state_topic)
                     mqtt_payload = json.dumps(mqtt_payload)  
                     sdr_payload[server_mqtt_config_topic] =  mqtt_payload
                     mqtt_publish_dict(sdr_payload, client, mqtt_ip)
     except Exception as exception:
         logging.error(f"There is an error in your SDR sensor collection. The error is the following: {exception}")
+def publish_dell_sensor_cycle(server, guid_dict, sdr_topic_types, ha_sensor_topic, client, mqtt_ip):
+    server_nodename = str(server['IPMI_NODENAME'])
+    server_ip = str(server['IPMI_IP'])
+    server_identifier = str("".join([guid_dict[server_ip]]))
+    if server_identifier == "":
+        logging.warning(f"DELL SDR sensor data collection for {server_nodename} has been skipped because no GUID was generated.")
+        return
+    full_output = get_dell_elist_full(server)
+    if 'SDRS' in server and server['SDRS']:
+        sdr_list = server['SDRS']
+    else:
+        sdr_list = dell_sdrs_from_elist(full_output)
+    device_mqtt_config = {"identifiers" : server_identifier, "configuration_url" : "http://" + server['IPMI_IP'], "manufacturer" : server['BRAND'], "name" : server_nodename}
+    current_topics = {}
+    for current_sdr in sdr_list:
+        if server['BRAND'] == 'DELL' and 'SDRS' in server and server['SDRS']:
+            matching_row = dell_matching_row(current_sdr, full_output)
+            if matching_row is None:
+                continue
+            sdr_value = numeric_sdr_value(matching_row[4])
+            sdr_class = str(current_sdr.get('SDR_CLASS', ''))
+            sdr_type = get_sdr_topic(current_sdr, sdr_topic_types)
+            sdr_name = str(current_sdr.get('SDR_NAME', current_sdr.get('SUBCLASS', sdr_type)))
+        else:
+            sdr_value = str(current_sdr.get('VALUE', ''))
+            sdr_class = str(current_sdr.get('SDR_CLASS', ''))
+            sdr_type = get_sdr_topic(current_sdr, sdr_topic_types)
+            sdr_name = str(current_sdr.get('SDR_NAME', current_sdr.get('SUBCLASS', sdr_type)))
+        sdr_topic = sdr_type
+        unique_id = ha_unique_id(server_identifier, "sdr", sdr_type)
+        server_mqtt_config_topic = ha_sensor_topic + "/" + server_identifier + "/" + sdr_topic + "/" + "config"
+        server_mqtt_state_topic = ha_sensor_topic + "/" + server_identifier + "/" + sdr_topic + "/" + "state"
+        sensor_payload = sensor_payload_for_class(device_mqtt_config, sdr_name, unique_id, sdr_class, server_mqtt_state_topic)
+        current_topics[server_mqtt_config_topic] = server_mqtt_state_topic
+        mqtt_publish_dict({server_mqtt_state_topic: sdr_value}, client, mqtt_ip)
+        mqtt_publish_dict({server_mqtt_config_topic: json.dumps(sensor_payload)}, client, mqtt_ip)
+    previous_topics = dell_discovery_cache.get(server_identifier, {})
+    stale_config_topics = set(previous_topics.keys()) - set(current_topics.keys())
+    for stale_config_topic in stale_config_topics:
+        stale_state_topic = previous_topics.get(stale_config_topic, "")
+        mqtt_publish_dict({stale_config_topic: ""}, client, mqtt_ip)
+        if stale_state_topic != "":
+            mqtt_publish_dict({stale_state_topic: ""}, client, mqtt_ip)
+    dell_discovery_cache[server_identifier] = current_topics
 def get_power_data(topic_dict, server_config, guid_dict, ha_binary_topic, power_topic, client, mqtt_ip):
     try:
         if power_topic == "":
@@ -572,6 +663,8 @@ def get_sdr_sensor_states(server_config, guid_dict, sdr_topic_types, ha_sensor_t
             else:
                 server_user = str(server['IPMI_USER'])
                 server_pass = str(server['IPMI_PASSWORD'])
+                if server['BRAND'] == 'DELL':
+                    continue
                 sdr_list = get_server_sdrs(server)
                 sdr_server_dict = {} # I create a dictionary with all of the servers values
                 for current_sdr in sdr_list:
@@ -665,6 +758,9 @@ def main(): # Here i have the main program
             #Sensor data gathering
                 # I get the power data from each server, one by one (following guid_dict order) and then send that data through mqtt to the mqtt server
                 get_power_data(topic_dict, server_config, guid_dict, ha_binary_topic, power_topic, client, mqtt_ip)
+                for server in server_config:
+                    if server['BRAND'] == 'DELL':
+                        publish_dell_sensor_cycle(server, guid_dict, sdr_topic_types, ha_sensor_topic, client, mqtt_ip)
                 # Get SDR DATA for each server if configured, or discovered for supported platforms.
                 try:
                     sdr_sensor_mqtt_dict, sdr_states = get_sdr_sensor_states(server_config, guid_dict, sdr_topic_types, ha_sensor_topic)

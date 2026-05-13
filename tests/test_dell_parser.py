@@ -73,6 +73,9 @@ class DellParserTest(unittest.TestCase):
     def setUpClass(cls):
         cls.ipmi_mqtt = load_ipmi_mqtt_module()
 
+    def setUp(self):
+        self.ipmi_mqtt.dell_discovery_cache.clear()
+
     def test_dell_parser_extracts_numeric_values(self):
         cases = (
             ("temperature", "Ambient Temp", "20"),
@@ -185,23 +188,28 @@ class DellParserTest(unittest.TestCase):
             "BRAND": "DELL",
             "IPMI_IP": "192.0.2.10",
             "SDRS": [
-                {"SDR_TYPE": 1, "SDR_CLASS": "current"},
-                {"SDR_TYPE": 2, "SDR_CLASS": "power"},
+                {"SDR_TYPE": 1, "SDR_NAME": "dell_psu_current", "SDR_CLASS": "current", "SUBCLASS": "Current", "VALUE": "10.1"},
+                {"SDR_TYPE": 2, "SDR_NAME": "dell_system_power", "SDR_CLASS": "power", "SUBCLASS": "System Level", "VALUE": "7.1"},
             ],
         }]
         guid_dict = {"192.0.2.10": "server-guid"}
         sdr_topic_types = {1: "dell_psu_current", 2: "dell_system_power"}
 
-        self.ipmi_mqtt.sensor_sdr_initialization(
-            server_config,
-            guid_dict,
-            sdr_topic_types,
-            "homeassistant/sensor",
-            client,
-            "mqtt.example",
-        )
+        with mock.patch.object(self.ipmi_mqtt, "get_dell_elist_full", return_value=DELL_SDR_OUTPUT):
+            self.ipmi_mqtt.publish_dell_sensor_cycle(
+                server_config[0],
+                guid_dict,
+                sdr_topic_types,
+                "homeassistant/sensor",
+                client,
+                "mqtt.example",
+            )
 
         payloads = {topic: payload for topic, payload, _qos, _retain in client.published}
+        self.assertEqual(client.published[0][0], "homeassistant/sensor/server-guid/dell_psu_current/state")
+        self.assertEqual(client.published[1][0], "homeassistant/sensor/server-guid/dell_psu_current/config")
+        self.assertEqual(client.published[2][0], "homeassistant/sensor/server-guid/dell_system_power/state")
+        self.assertEqual(client.published[3][0], "homeassistant/sensor/server-guid/dell_system_power/config")
         current_payload = payloads["homeassistant/sensor/server-guid/dell_psu_current/config"]
         power_payload = payloads["homeassistant/sensor/server-guid/dell_system_power/config"]
 
@@ -210,9 +218,11 @@ class DellParserTest(unittest.TestCase):
         self.assertEqual(current_payload["unique_id"], "server-guid_sdr_dell_psu_current")
         self.assertEqual(current_payload["unit_of_meas"], "A")
         self.assertEqual(current_payload["state_class"], "measurement")
+        self.assertEqual(current_payload["icon"], "mdi:current-ac")
         self.assertEqual(power_payload["device_class"], "power")
         self.assertEqual(power_payload["unit_of_meas"], "W")
         self.assertEqual(power_payload["state_class"], "measurement")
+        self.assertEqual(power_payload["icon"], "mdi:flash")
 
     def test_discovered_duplicate_sensor_uses_human_display_name(self):
         class PublishResult:
@@ -232,18 +242,19 @@ class DellParserTest(unittest.TestCase):
             "IPMI_NODENAME": "DELL-IDRAC6",
             "BRAND": "DELL",
             "IPMI_IP": "192.0.2.10",
+            "SDRS": [{
+                "SDR_TYPE": "Voltage 10.1",
+                "SDR_TOPIC": "Voltage 10.1",
+                "SDR_NAME": "Voltage",
+                "SDR_CLASS": "voltage",
+                "SUBCLASS": "Voltage",
+                "VALUE": "10.1",
+            }],
         }]
 
-        with mock.patch.object(self.ipmi_mqtt, "discover_dell_sdrs", return_value=[{
-            "SDR_TYPE": "Voltage 10.1",
-            "SDR_TOPIC": "Voltage 10.1",
-            "SDR_NAME": "Voltage",
-            "SDR_CLASS": "voltage",
-            "SUBCLASS": "Voltage",
-            "VALUE": "10.1",
-        }]):
-            self.ipmi_mqtt.sensor_sdr_initialization(
-                server_config,
+        with mock.patch.object(self.ipmi_mqtt, "get_dell_elist_full", return_value=DELL_SDR_OUTPUT):
+            self.ipmi_mqtt.publish_dell_sensor_cycle(
+                server_config[0],
                 {"192.0.2.10": "DELL-IDRAC6"},
                 {},
                 "homeassistant/sensor",
@@ -257,6 +268,7 @@ class DellParserTest(unittest.TestCase):
         self.assertEqual(voltage_payload["name"], "Voltage")
         self.assertEqual(voltage_payload["unique_id"], "DELL-IDRAC6_sdr_Voltage_10_1")
         self.assertEqual(voltage_payload["state_class"], "measurement")
+        self.assertEqual(voltage_payload["icon"], "mdi:sine-wave")
 
     def test_fan_rpm_discovery_does_not_use_frequency_device_class(self):
         class PublishResult:
@@ -276,18 +288,19 @@ class DellParserTest(unittest.TestCase):
             "IPMI_NODENAME": "DELL-IDRAC6",
             "BRAND": "DELL",
             "IPMI_IP": "192.0.2.10",
+            "SDRS": [{
+                "SDR_TYPE": "FAN MOD 1A RPM",
+                "SDR_TOPIC": "FAN MOD 1A RPM",
+                "SDR_NAME": "FAN MOD 1A RPM",
+                "SDR_CLASS": "fan",
+                "SUBCLASS": "FAN MOD 1A RPM",
+                "VALUE": "7.1",
+            }],
         }]
 
-        with mock.patch.object(self.ipmi_mqtt, "discover_dell_sdrs", return_value=[{
-            "SDR_TYPE": "FAN MOD 1A RPM",
-            "SDR_TOPIC": "FAN MOD 1A RPM",
-            "SDR_NAME": "FAN MOD 1A RPM",
-            "SDR_CLASS": "fan",
-            "SUBCLASS": "FAN MOD 1A RPM",
-            "VALUE": "7.1",
-        }]):
-            self.ipmi_mqtt.sensor_sdr_initialization(
-                server_config,
+        with mock.patch.object(self.ipmi_mqtt, "get_dell_elist_full", return_value=DELL_SDR_OUTPUT):
+            self.ipmi_mqtt.publish_dell_sensor_cycle(
+                server_config[0],
                 {"192.0.2.10": "DELL-IDRAC6"},
                 {},
                 "homeassistant/sensor",
@@ -301,6 +314,61 @@ class DellParserTest(unittest.TestCase):
         self.assertNotIn("device_class", fan_payload)
         self.assertNotIn("state_class", fan_payload)
         self.assertEqual(fan_payload["unit_of_meas"], "RPM")
+        self.assertEqual(fan_payload["icon"], "mdi:fan")
+
+    def test_dell_publish_cycle_clears_stale_topics(self):
+        class PublishResult:
+            def wait_for_publish(self):
+                return True
+
+        class Client:
+            def __init__(self):
+                self.published = []
+
+            def publish(self, topic, payload, qos=0, retain=False):
+                self.published.append((topic, payload, qos, retain))
+                return PublishResult()
+
+        client = Client()
+        self.ipmi_mqtt.dell_discovery_cache["DELL-IDRAC6"] = {
+            "homeassistant/sensor/DELL-IDRAC6/old_metric/config": "homeassistant/sensor/DELL-IDRAC6/old_metric/state"
+        }
+
+        server = {
+            "IPMI_NODENAME": "DELL-IDRAC6",
+            "BRAND": "DELL",
+            "IPMI_IP": "192.0.2.10",
+            "SDRS": [{
+                "SDR_TYPE": "Current 10.1",
+                "SDR_TOPIC": "Current 10.1",
+                "SDR_CLASS": "current",
+                "SUBCLASS": "Current",
+                "VALUE": "10.1",
+            }],
+        }
+
+        with mock.patch.object(self.ipmi_mqtt, "get_dell_elist_full", return_value=DELL_SDR_OUTPUT):
+            self.ipmi_mqtt.publish_dell_sensor_cycle(
+                server,
+                {"192.0.2.10": "DELL-IDRAC6"},
+                {},
+                "homeassistant/sensor",
+                client,
+                "mqtt.example",
+            )
+
+        self.assertIn(
+            ("homeassistant/sensor/DELL-IDRAC6/old_metric/config", "", 2, True),
+            client.published,
+        )
+        self.assertIn(
+            ("homeassistant/sensor/DELL-IDRAC6/old_metric/state", "", 2, True),
+            client.published,
+        )
+        self.assertEqual(
+            self.ipmi_mqtt.dell_discovery_cache["DELL-IDRAC6"],
+            {"homeassistant/sensor/DELL-IDRAC6/Current_10_1/config": "homeassistant/sensor/DELL-IDRAC6/Current_10_1/state"},
+        )
 
     def test_power_state_name_is_human_readable(self):
         class PublishResult:
