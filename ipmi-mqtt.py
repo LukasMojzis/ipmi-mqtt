@@ -104,13 +104,40 @@ def switch_subscribe(topic_dict, server_config, guid_dict, ha_switch_topic, swit
 def on_subscribe(client, userdata, mid, granted_qos):
     logging.info(f"The server has acknowledged your subscription requested on mid {mid} with qos {granted_qos}")
 def mqtt_safe_identifier(identifier):
-    identifier = re.sub(r'[^A-Za-z0-9_-]+', '_', str(identifier).strip())
-    identifier = re.sub(r'_+', '_', identifier).strip('_')
+    identifier = re.sub(r'[\x00-\x1f\x7f/+#]+', ' ', str(identifier).strip())
+    identifier = re.sub(r' +', ' ', identifier).strip()
     return identifier
 def mqtt_path_segment(identifier):
     return mqtt_safe_identifier(identifier)
 def ha_unique_id(*parts):
-    return mqtt_safe_identifier("_".join(str(part) for part in parts if str(part) != ""))
+    return mqtt_safe_identifier(" ".join(str(part) for part in parts if str(part) != ""))
+def mqtt_display_name(value):
+    value = str(value).strip()
+    if value == "":
+        return value
+    return re.sub(r'[_-]+', ' ', value).title()
+def power_display_name(power_topic):
+    if power_topic == "server_power_state":
+        return "Power State"
+    return mqtt_display_name(power_topic)
+def sdr_display_name(sensor_name, sdr_class):
+    sensor_name = str(sensor_name).strip()
+    if sensor_name == "":
+        return sensor_name
+    domain_names = {
+        "temperature": ("Temperature", ("temp", "temperature")),
+        "temperaturef": ("Temperature", ("temp", "temperature")),
+        "voltage": ("Voltage", ("volt", "voltage")),
+        "current": ("Current", ("amp", "current")),
+        "power": ("Power", ("watt", "power")),
+        "fan": ("Fan", ("fan", "rpm")),
+        "frequency": ("Frequency", ("frequency", "hz")),
+    }
+    domain_name, domain_tokens = domain_names.get(str(sdr_class), ("", ()))
+    lower_name = sensor_name.lower()
+    if domain_name != "" and not any(token in lower_name for token in domain_tokens):
+        return f"{sensor_name} {domain_name}"
+    return sensor_name
 def mqtt_publish_dict(mqtt_dict, client, mqtt_ip):
     for x, y in mqtt_dict.items():
         publish_result = client.publish(str(x), str(y), qos=2, retain=True)
@@ -254,10 +281,11 @@ def dell_sdrs_from_elist(server_sdr_state):
     for sdr_row in sdr_rows:
         sdr_topic = sdr_row["SDR_TOPIC"]
         if topic_counts[sdr_topic] > 1:
-            sdr_topic = (f"{sdr_row['SUBCLASS']}_{sdr_row['VALUE']}")
+            sdr_topic = (f"{sdr_row['SUBCLASS']} {sdr_row['VALUE']}")
         sdrs.append({
             "SDR_TYPE": sdr_topic,
             "SDR_TOPIC": sdr_topic,
+            "SDR_NAME": sdr_display_name(sdr_topic, sdr_row["SDR_CLASS"]),
             "SDR_CLASS": sdr_row["SDR_CLASS"],
             "SUBCLASS": sdr_row["SUBCLASS"],
             "VALUE": sdr_row["VALUE"],
@@ -279,6 +307,9 @@ def get_server_sdrs(server):
     return []
 def power_sdr_initialization(server_config, guid_dict, ha_binary_topic, power_topic, client, mqtt_ip):
     try:    
+        if power_topic == "":
+            logging.info("Power state discovery is disabled because no POWER topic is configured.")
+            return
         power_payload = {}
         for server in server_config:
             server_nodename = server['IPMI_NODENAME']
@@ -291,7 +322,7 @@ def power_sdr_initialization(server_config, guid_dict, ha_binary_topic, power_to
                 device_mqtt_config = {"identifiers" : server_identifier, "configuration_url" : "http://" + server['IPMI_IP'], "manufacturer" : server['BRAND'], "name" : server_nodename}
                 server_mqtt_config_topic = ha_binary_topic + "/" + server_identifier + "/" + power_path + "/" + "config"
                 server_mqtt_state_topic = ha_binary_topic + "/" + server_identifier + "/" + power_path + "/" + "state"
-                mqtt_payload = {"device" : device_mqtt_config, "device_class" : "power", "name" : power_topic , "unique_id" : ha_unique_id(server_identifier, "power"), "force_update" : True, "payload_on" : "on", "payload_off" : "off" , "retain" : True, "state_topic" : server_mqtt_state_topic }
+                mqtt_payload = {"device" : device_mqtt_config, "device_class" : "power", "name" : power_display_name(power_topic), "unique_id" : ha_unique_id(server_identifier, "power"), "force_update" : True, "payload_on" : "on", "payload_off" : "off" , "retain" : True, "state_topic" : server_mqtt_state_topic }
                 mqtt_payload = json.dumps(mqtt_payload)  
                 power_payload[server_mqtt_config_topic] = mqtt_payload
                 mqtt_publish_dict(power_payload, client, mqtt_ip)
@@ -375,7 +406,7 @@ def sensor_sdr_initialization(server_config, guid_dict, sdr_topic_types, ha_sens
         logging.error(f"There is an error in your SDR sensor collection. The error is the following: {exception}")
 def get_power_data(topic_dict, server_config, guid_dict, ha_binary_topic, power_topic, client, mqtt_ip):
     try:
-        if 'POWER' not in topic_dict:
+        if power_topic == "":
             logging.info("You have no power topic.")
         else:
             power_states = {} #I create a dictionary
@@ -402,7 +433,7 @@ def get_power_data(topic_dict, server_config, guid_dict, ha_binary_topic, power_
         logging.error(f"There is an error in your power sensor collection. The error is the following: {exception}")
 def get_single_power_data(complete_guid_dict, server_guid, topic_dict, ha_binary_topic, power_topic, client, mqtt_ip):
     try:
-        if 'POWER' not in topic_dict:
+        if power_topic == "":
             logging.info("You have no power topic.")
         elif server_guid == "":
                 logging.warning(f"Power sensor data collection for {server_nodename} has been skipped because no GUID was generated.")

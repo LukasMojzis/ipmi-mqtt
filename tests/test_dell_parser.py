@@ -108,7 +108,7 @@ class DellParserTest(unittest.TestCase):
         )
         self.assertEqual(
             self.ipmi_mqtt.mqtt_safe_identifier(" guid/with#+BAD\x00chars "),
-            "guid_with_BAD_chars",
+            "guid with BAD chars",
         )
 
     def test_get_guid_uses_sanitized_nodename_as_entity_prefix(self):
@@ -128,8 +128,8 @@ class DellParserTest(unittest.TestCase):
         with mock.patch.object(self.ipmi_mqtt.subprocess, "run", return_value=completed):
             guid_dict, complete_guid_dict = self.ipmi_mqtt.get_guid(server_config)
 
-        self.assertEqual(guid_dict["192.0.2.10"], "Node_01_DELL-IDRAC6")
-        self.assertIn("Node_01_DELL-IDRAC6", complete_guid_dict)
+        self.assertEqual(guid_dict["192.0.2.10"], "Node 01 DELL-IDRAC6")
+        self.assertIn("Node 01 DELL-IDRAC6", complete_guid_dict)
 
     def test_dell_elist_autodiscovery_builds_visible_sdrs(self):
         sdrs = self.ipmi_mqtt.dell_sdrs_from_elist(DELL_SDR_OUTPUT)
@@ -137,22 +137,25 @@ class DellParserTest(unittest.TestCase):
 
         self.assertIn("Ambient Temp", topics)
         self.assertIn("FAN MOD 1A RPM", topics)
-        self.assertIn("Current_10.1", topics)
-        self.assertIn("Current_10.2", topics)
-        self.assertIn("Voltage_10.1", topics)
-        self.assertIn("Voltage_10.2", topics)
+        self.assertIn("Current 10.1", topics)
+        self.assertIn("Current 10.2", topics)
+        self.assertIn("Voltage 10.1", topics)
+        self.assertIn("Voltage 10.2", topics)
         self.assertIn("System Level", topics)
         self.assertNotIn("Temp", topics)
         self.assertEqual(topics["Ambient Temp"]["SDR_CLASS"], "temperature")
         self.assertEqual(topics["FAN MOD 1A RPM"]["SDR_CLASS"], "fan")
-        self.assertEqual(topics["Current_10.1"]["SDR_CLASS"], "current")
-        self.assertEqual(topics["Voltage_10.1"]["SDR_CLASS"], "voltage")
+        self.assertEqual(topics["Current 10.1"]["SDR_CLASS"], "current")
+        self.assertEqual(topics["Current 10.1"]["SDR_NAME"], "Current 10.1")
+        self.assertEqual(topics["Voltage 10.1"]["SDR_CLASS"], "voltage")
+        self.assertEqual(topics["Voltage 10.1"]["SDR_NAME"], "Voltage 10.1")
         self.assertEqual(topics["System Level"]["SDR_CLASS"], "power")
+        self.assertEqual(topics["System Level"]["SDR_NAME"], "System Level Power")
 
     def test_get_sdr_topic_derives_name_when_no_topic_map_exists(self):
         current_sdr = {"SUBCLASS": "Ambient Temp", "VALUE": "7.1", "SDR_CLASS": "temperature"}
 
-        self.assertEqual(self.ipmi_mqtt.get_sdr_topic(current_sdr, {}), "Ambient_Temp")
+        self.assertEqual(self.ipmi_mqtt.get_sdr_topic(current_sdr, {}), "Ambient Temp")
 
     def test_missing_topics_defaults_to_read_only_topics(self):
         topic_dict, power_topic, switch_topic, sdr_topic_types, sdr_count = self.ipmi_mqtt.get_topics({})
@@ -204,10 +207,82 @@ class DellParserTest(unittest.TestCase):
 
         self.assertEqual(current_payload["device_class"], "current")
         self.assertEqual(current_payload["name"], "dell_psu_current")
-        self.assertEqual(current_payload["unique_id"], "server-guid_sdr_dell_psu_current")
+        self.assertEqual(current_payload["unique_id"], "server-guid sdr dell_psu_current")
         self.assertEqual(current_payload["unit_of_meas"], "A")
         self.assertEqual(power_payload["device_class"], "power")
         self.assertEqual(power_payload["unit_of_meas"], "W")
+
+    def test_discovered_duplicate_sensor_uses_human_display_name(self):
+        class PublishResult:
+            def wait_for_publish(self):
+                return True
+
+        class Client:
+            def __init__(self):
+                self.published = []
+
+            def publish(self, topic, payload, qos=0, retain=False):
+                self.published.append((topic, json.loads(payload), qos, retain))
+                return PublishResult()
+
+        client = Client()
+        server_config = [{
+            "IPMI_NODENAME": "DELL-IDRAC6",
+            "BRAND": "DELL",
+            "IPMI_IP": "192.0.2.10",
+        }]
+
+        with mock.patch.object(self.ipmi_mqtt, "discover_dell_sdrs", return_value=[{
+            "SDR_TYPE": "Voltage_10.1",
+            "SDR_TOPIC": "Voltage_10.1",
+            "SDR_NAME": "Voltage",
+            "SDR_CLASS": "voltage",
+            "SUBCLASS": "Voltage",
+            "VALUE": "10.1",
+        }]):
+            self.ipmi_mqtt.sensor_sdr_initialization(
+                server_config,
+                {"192.0.2.10": "DELL-IDRAC6"},
+                {},
+                "homeassistant/sensor",
+                client,
+                "mqtt.example",
+            )
+
+        payloads = {topic: payload for topic, payload, _qos, _retain in client.published}
+        voltage_payload = payloads["homeassistant/sensor/DELL-IDRAC6/Voltage_10.1/config"]
+
+        self.assertEqual(voltage_payload["name"], "Voltage")
+        self.assertEqual(voltage_payload["unique_id"], "DELL-IDRAC6 sdr Voltage_10.1")
+
+    def test_power_state_name_is_human_readable(self):
+        class PublishResult:
+            def wait_for_publish(self):
+                return True
+
+        class Client:
+            def __init__(self):
+                self.published = []
+
+            def publish(self, topic, payload, qos=0, retain=False):
+                self.published.append((topic, json.loads(payload), qos, retain))
+                return PublishResult()
+
+        client = Client()
+
+        self.ipmi_mqtt.power_sdr_initialization(
+            [{"IPMI_NODENAME": "Node", "BRAND": "DELL", "IPMI_IP": "192.0.2.10"}],
+            {"192.0.2.10": "Node"},
+            "homeassistant/binary_sensor",
+            "server_power_state",
+            client,
+            "mqtt.example",
+        )
+
+        payloads = {topic: payload for topic, payload, _qos, _retain in client.published}
+        power_payload = payloads["homeassistant/binary_sensor/Node/server_power_state/config"]
+
+        self.assertEqual(power_payload["name"], "Power State")
 
     def test_switch_discovery_is_opt_in(self):
         class Client:
