@@ -466,19 +466,13 @@ def publish_dell_sensor_cycle(server, guid_dict, sdr_topic_types, ha_sensor_topi
     device_mqtt_config = {"identifiers" : server_identifier, "configuration_url" : "http://" + server['IPMI_IP'], "manufacturer" : server['BRAND'], "name" : server_nodename}
     current_topics = {}
     for current_sdr in sdr_list:
-        if server['BRAND'] == 'DELL' and 'SDRS' in server and server['SDRS']:
-            matching_row = dell_matching_row(current_sdr, full_output)
-            if matching_row is None:
-                continue
-            sdr_value = numeric_sdr_value(matching_row[4])
-            sdr_class = str(current_sdr.get('SDR_CLASS', ''))
-            sdr_type = get_sdr_topic(current_sdr, sdr_topic_types)
-            sdr_name = str(current_sdr.get('SDR_NAME', current_sdr.get('SUBCLASS', sdr_type)))
-        else:
-            sdr_value = str(current_sdr.get('VALUE', ''))
-            sdr_class = str(current_sdr.get('SDR_CLASS', ''))
-            sdr_type = get_sdr_topic(current_sdr, sdr_topic_types)
-            sdr_name = str(current_sdr.get('SDR_NAME', current_sdr.get('SUBCLASS', sdr_type)))
+        matching_row = dell_matching_row(current_sdr, full_output)
+        if matching_row is None:
+            continue
+        sdr_value = numeric_sdr_value(matching_row[4])
+        sdr_class = str(current_sdr.get('SDR_CLASS', ''))
+        sdr_type = get_sdr_topic(current_sdr, sdr_topic_types)
+        sdr_name = str(current_sdr.get('SDR_NAME', current_sdr.get('SUBCLASS', sdr_type)))
         sdr_topic = sdr_type
         unique_id = ha_unique_id(server_identifier, "sdr", sdr_type)
         server_mqtt_config_topic = ha_sensor_topic + "/" + server_identifier + "/" + sdr_topic + "/" + "config"

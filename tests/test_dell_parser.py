@@ -179,7 +179,7 @@ class DellParserTest(unittest.TestCase):
                 self.published = []
 
             def publish(self, topic, payload, qos=0, retain=False):
-                self.published.append((topic, json.loads(payload), qos, retain))
+                self.published.append((topic, payload, qos, retain))
                 return PublishResult()
 
         client = Client()
@@ -205,7 +205,7 @@ class DellParserTest(unittest.TestCase):
                 "mqtt.example",
             )
 
-        payloads = {topic: payload for topic, payload, _qos, _retain in client.published}
+        payloads = {topic: json.loads(payload) for topic, payload, _qos, _retain in client.published}
         self.assertEqual(client.published[0][0], "homeassistant/sensor/server-guid/dell_psu_current/state")
         self.assertEqual(client.published[1][0], "homeassistant/sensor/server-guid/dell_psu_current/config")
         self.assertEqual(client.published[2][0], "homeassistant/sensor/server-guid/dell_system_power/state")
@@ -223,6 +223,10 @@ class DellParserTest(unittest.TestCase):
         self.assertEqual(power_payload["unit_of_meas"], "W")
         self.assertEqual(power_payload["state_class"], "measurement")
         self.assertEqual(power_payload["icon"], "mdi:flash")
+
+        state_payloads = {topic: payload for topic, payload, _qos, _retain in client.published if topic.endswith("/state")}
+        self.assertEqual(state_payloads["homeassistant/sensor/server-guid/dell_psu_current/state"], "0.60")
+        self.assertEqual(state_payloads["homeassistant/sensor/server-guid/dell_system_power/state"], "287")
 
     def test_discovered_duplicate_sensor_uses_human_display_name(self):
         class PublishResult:
