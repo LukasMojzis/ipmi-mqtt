@@ -51,6 +51,58 @@ def sdr_display_name(sensor_name, sdr_class):
     return sensor_name
 
 
+def unit_name_tokens(units):
+    units = str(units or '').strip()
+    if units == "":
+        return []
+    normalized = units.lower()
+    tokens = {
+        units,
+        normalized,
+    }
+    unit_aliases = {
+        "rpm": ("RPM", "rpm"),
+        "hz": ("Hz", "hz"),
+        "v": ("V", "v", "volt", "volts"),
+        "volt": ("V", "v", "volt", "volts"),
+        "volts": ("V", "v", "volt", "volts"),
+        "a": ("A", "a", "amp", "amps"),
+        "amp": ("A", "a", "amp", "amps"),
+        "amps": ("A", "a", "amp", "amps"),
+        "w": ("W", "w", "watt", "watts"),
+        "watt": ("W", "w", "watt", "watts"),
+        "watts": ("W", "w", "watt", "watts"),
+        "°c": ("°C", "°c", "C", "c"),
+        "c": ("°C", "°c", "C", "c"),
+        "degrees c": ("degrees C", "degrees c", "°C", "°c", "C", "c"),
+        "°f": ("°F", "°f", "F", "f"),
+        "f": ("°F", "°f", "F", "f"),
+        "degrees f": ("degrees F", "degrees f", "°F", "°f", "F", "f"),
+    }
+    tokens.update(unit_aliases.get(normalized, ()))
+    return sorted((token for token in tokens if token != ""), key=len, reverse=True)
+
+
+def strip_unit_from_name(sensor_name, units):
+    sensor_name = str(sensor_name or '').strip()
+    if sensor_name == "":
+        return sensor_name
+    cleaned = sensor_name
+    for token in unit_name_tokens(units):
+        if len(token) == 1:
+            pattern = r'(?i)\s+' + re.escape(token) + r'\s*$'
+        elif token.startswith("°"):
+            pattern = r'(?i)\s*' + re.escape(token) + r'\s*$'
+        else:
+            pattern = r'(?i)(?:\s+|\s*[\(\[])\b' + re.escape(token) + r'\b[\)\]]?\s*$'
+        next_cleaned = re.sub(pattern, '', cleaned).strip()
+        if next_cleaned != cleaned:
+            cleaned = next_cleaned
+            break
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    return cleaned or sensor_name
+
+
 def sensor_icon_for_class(sdr_class):
     icons = {
         "temperature": "mdi:thermometer",
@@ -64,7 +116,7 @@ def sensor_icon_for_class(sdr_class):
     return icons.get(str(sdr_class), "")
 
 
-def sensor_payload_for_class(device_mqtt_config, sdr_name, unique_id, sdr_class, state_topic):
+def sensor_payload_for_class(device_mqtt_config, sdr_name, unique_id, sdr_class, state_topic, suggested_display_precision=None):
     payload = {
         "device": device_mqtt_config,
         "name": sdr_name,
@@ -76,6 +128,8 @@ def sensor_payload_for_class(device_mqtt_config, sdr_name, unique_id, sdr_class,
     icon = sensor_icon_for_class(sdr_class)
     if icon != "":
         payload["icon"] = icon
+    if suggested_display_precision is not None:
+        payload["suggested_display_precision"] = int(suggested_display_precision)
     if sdr_class == "temperature":
         payload["device_class"] = "temperature"
         payload["unit_of_meas"] = "°C"
@@ -315,6 +369,17 @@ def pyghmi_value(reading):
     return str(value)
 
 
+def observed_display_precision(value):
+    value = str(value).strip()
+    numeric_match = re.fullmatch(r'[+-]?\d+(?:\.(\d+))?', value)
+    if not numeric_match:
+        return 0
+    fractional = numeric_match.group(1)
+    if fractional is None or int(fractional) == 0:
+        return 0
+    return len(fractional)
+
+
 def sensor_matches_config(reading, current_sdr):
     reading_name = str(getattr(reading, 'name', '') or '').strip()
     configured_name = str(current_sdr.get('SUBCLASS', current_sdr.get('SDR_TOPIC', ''))).strip()
@@ -332,17 +397,20 @@ def pyghmi_readings_to_sdrs(readings):
         sdr_class = classify_pyghmi_sensor(reading)
         value = pyghmi_value(reading)
         name = str(getattr(reading, 'name', '') or '').strip()
-        if name == '' or sdr_class == '' or value == '':
+        display_name = strip_unit_from_name(name, getattr(reading, 'units', ''))
+        if name == '' or display_name == '' or sdr_class == '' or value == '':
             continue
-        topic_counts[name] = topic_counts.get(name, 0) + 1
-        visible.append((reading, name, sdr_class, value))
+        topic_counts[display_name] = topic_counts.get(display_name, 0) + 1
+        visible.append((reading, name, display_name, sdr_class, value))
 
     used_topics = {}
+    display_seen = {}
     sdrs = []
-    for reading, name, sdr_class, value in visible:
-        topic = name
-        if topic_counts[name] > 1:
-            topic = f"{name} {len([s for s in sdrs if s['SUBCLASS'] == name]) + 1}"
+    for reading, name, display_name, sdr_class, value in visible:
+        topic = display_name
+        if topic_counts[display_name] > 1:
+            display_seen[display_name] = display_seen.get(display_name, 0) + 1
+            topic = f"{display_name} {display_seen[display_name]}"
         topic_path = mqtt_path_segment(topic)
         if topic_path in used_topics:
             used_topics[topic_path] += 1
@@ -352,7 +420,7 @@ def pyghmi_readings_to_sdrs(readings):
         sdrs.append({
             "SDR_TYPE": topic,
             "SDR_TOPIC": topic,
-            "SDR_NAME": sdr_display_name(topic, sdr_class),
+            "SDR_NAME": sdr_display_name(strip_unit_from_name(topic, getattr(reading, 'units', '')), sdr_class),
             "SDR_CLASS": sdr_class,
             "SUBCLASS": name,
             "VALUE": value,
@@ -367,6 +435,7 @@ class SensorUpdateEngine:
         self.fallback_interval = fallback_interval
         self.discovery_cache = {}
         self.value_cache = {}
+        self.precision_cache = {}
         self.poll_count = {}
 
     def reset_server(self, server_identifier):
@@ -374,6 +443,9 @@ class SensorUpdateEngine:
         keys = [key for key in self.value_cache if key[0] == server_identifier]
         for key in keys:
             self.value_cache.pop(key, None)
+        keys = [key for key in self.precision_cache if key[0] == server_identifier]
+        for key in keys:
+            self.precision_cache.pop(key, None)
         self.poll_count.pop(server_identifier, None)
 
     def dell_snapshot(self, server, server_identifier, sdr_topic_types):
@@ -406,7 +478,8 @@ class SensorUpdateEngine:
             current_topics.add(reading["topic"])
             cache_key = (server_identifier, reading["topic"])
             previous_value = self.value_cache.get(cache_key)
-            if previous_value != reading["value"] or force_discovery:
+            precision_changed = self.update_reading_precision(cache_key, reading)
+            if previous_value != reading["value"] or precision_changed or force_discovery:
                 changed.append(reading)
                 self.value_cache[cache_key] = reading["value"]
         self.discovery_cache[server_identifier] = current_topics
@@ -429,7 +502,8 @@ class SensorUpdateEngine:
                 sdr.setdefault("SDR_CLASS", classify_pyghmi_sensor(match))
                 if "SDR_TYPE" not in sdr:
                     sdr.setdefault("SDR_TOPIC", sdr.get("SUBCLASS", str(getattr(match, 'name', ''))))
-                sdr.setdefault("SDR_NAME", sdr_display_name(sdr.get("SDR_TOPIC", sdr.get("SUBCLASS", sdr.get("SDR_TYPE", ""))), sdr["SDR_CLASS"]))
+                display_source = sdr.get("SDR_TOPIC", sdr.get("SUBCLASS", sdr.get("SDR_TYPE", "")))
+                sdr.setdefault("SDR_NAME", sdr_display_name(strip_unit_from_name(display_source, getattr(match, 'units', '')), sdr["SDR_CLASS"]))
                 sdr_list.append(sdr)
         else:
             sdr_list = pyghmi_readings_to_sdrs(raw_readings)
@@ -480,6 +554,18 @@ class SensorUpdateEngine:
         readings = self.dell_snapshot_from_output(server, server_identifier, sdr_topic_types, full_output)
         return self.dell_changes_from_readings(server_identifier, readings, force_discovery)
 
+    def update_reading_precision(self, cache_key, reading):
+        configured_precision = reading["source"].get("SUGGESTED_DISPLAY_PRECISION")
+        if configured_precision is not None:
+            reading["display_precision"] = int(configured_precision)
+            return False
+        next_precision = observed_display_precision(reading["value"])
+        previous_precision = self.precision_cache.get(cache_key, 0)
+        display_precision = max(previous_precision, next_precision)
+        self.precision_cache[cache_key] = display_precision
+        reading["display_precision"] = display_precision
+        return display_precision > previous_precision
+
     def dell_changes_from_readings(self, server_identifier, readings, force_discovery=False):
         current_topics = {reading["topic"] for reading in readings}
         previous_topics = self.discovery_cache.get(server_identifier, set())
@@ -493,13 +579,15 @@ class SensorUpdateEngine:
         for reading in readings:
             cache_key = (server_identifier, reading["topic"])
             previous_value = self.value_cache.get(cache_key)
-            if previous_value != reading["value"] or reading["topic"] not in previous_topics or force_discovery:
+            precision_changed = self.update_reading_precision(cache_key, reading)
+            if previous_value != reading["value"] or reading["topic"] not in previous_topics or precision_changed or force_discovery:
                 changed.append(reading)
                 self.value_cache[cache_key] = reading["value"]
             elif should_emit_health:
                 logging.debug(f"Sensor {server_identifier}/{reading['topic']} unchanged during fallback poll.")
         for stale_topic in stale_topics:
             self.value_cache.pop((server_identifier, stale_topic), None)
+            self.precision_cache.pop((server_identifier, stale_topic), None)
         return changed, stale_topics
 
 

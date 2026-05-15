@@ -110,8 +110,8 @@ def sdr_display_name(sensor_name, sdr_class):
     return core.sdr_display_name(sensor_name, sdr_class)
 def sensor_icon_for_class(sdr_class):
     return core.sensor_icon_for_class(sdr_class)
-def sensor_payload_for_class(device_mqtt_config, sdr_name, unique_id, sdr_class, state_topic):
-    return core.sensor_payload_for_class(device_mqtt_config, sdr_name, unique_id, sdr_class, state_topic)
+def sensor_payload_for_class(device_mqtt_config, sdr_name, unique_id, sdr_class, state_topic, suggested_display_precision=None):
+    return core.sensor_payload_for_class(device_mqtt_config, sdr_name, unique_id, sdr_class, state_topic, suggested_display_precision)
 def mqtt_publish_dict(mqtt_dict, client, mqtt_ip):
     for x, y in mqtt_dict.items():
         publish_result = client.publish(str(x), str(y), qos=2, retain=True)
@@ -313,7 +313,14 @@ def sensor_sdr_initialization(server_config, guid_dict, sdr_topic_types, ha_sens
                     unique_id = ha_unique_id(server_identifier, "sdr", sdr_type)
                     server_mqtt_config_topic = ha_sensor_topic + "/" + server_identifier + "/" + sdr_topic + "/" + "config"
                     server_mqtt_state_topic = ha_sensor_topic + "/" + server_identifier + "/" + sdr_topic + "/" + "state"
-                    mqtt_payload = sensor_payload_for_class(device_mqtt_config, sdr_name, unique_id, sdr_class, server_mqtt_state_topic)
+                    mqtt_payload = sensor_payload_for_class(
+                        device_mqtt_config,
+                        sdr_name,
+                        unique_id,
+                        sdr_class,
+                        server_mqtt_state_topic,
+                        current_sdr.get("SUGGESTED_DISPLAY_PRECISION", 0),
+                    )
                     mqtt_payload = json.dumps(mqtt_payload)  
                     sdr_payload[server_mqtt_config_topic] =  mqtt_payload
                     mqtt_publish_dict(sdr_payload, client, mqtt_ip)
@@ -336,7 +343,7 @@ def publish_dell_sensor_changes(server, server_identifier, changed_readings, sta
         unique_id = ha_unique_id(server_identifier, "sdr", sdr_topic)
         server_mqtt_config_topic = ha_sensor_topic + "/" + server_identifier + "/" + sdr_topic + "/" + "config"
         server_mqtt_state_topic = ha_sensor_topic + "/" + server_identifier + "/" + sdr_topic + "/" + "state"
-        sensor_payload = sensor_payload_for_class(device_mqtt_config, sdr_name, unique_id, sdr_class, server_mqtt_state_topic)
+        sensor_payload = sensor_payload_for_class(device_mqtt_config, sdr_name, unique_id, sdr_class, server_mqtt_state_topic, reading.get("display_precision", 0))
         mqtt_publish_dict({server_mqtt_state_topic: sdr_value}, client, mqtt_ip)
         mqtt_publish_dict({server_mqtt_config_topic: json.dumps(sensor_payload)}, client, mqtt_ip)
     previous_topics = dell_discovery_cache.get(server_identifier, {})

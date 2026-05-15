@@ -142,6 +142,7 @@ class DellParserTest(unittest.TestCase):
         self.ipmi_mqtt.dell_discovery_cache.clear()
         self.ipmi_mqtt.sensor_update_engine.discovery_cache.clear()
         self.ipmi_mqtt.sensor_update_engine.value_cache.clear()
+        self.ipmi_mqtt.sensor_update_engine.precision_cache.clear()
         self.ipmi_mqtt.sensor_update_engine.poll_count.clear()
         self.ipmi_mqtt.sensor_update_engine.backend = FakeBackend([readings_from_elist(DELL_SDR_OUTPUT)])
         self.ipmi_mqtt.poll_metrics = ipmi_mqtt_core.PollMetrics()
@@ -173,6 +174,78 @@ class DellParserTest(unittest.TestCase):
 
     def test_numeric_sdr_value_preserves_decimals(self):
         self.assertEqual(self.ipmi_mqtt.numeric_sdr_value("0.60 Amps"), "0.60")
+
+    def test_pyghmi_value_uses_reported_numeric_precision(self):
+        self.assertEqual(ipmi_mqtt_core.pyghmi_value(Reading("Ambient Temp", 19.0, "°C")), "19.0")
+        self.assertEqual(ipmi_mqtt_core.pyghmi_value(Reading("Ambient Temp", 19.5, "°C")), "19.5")
+        self.assertEqual(ipmi_mqtt_core.pyghmi_value(Reading("Current", "0.60", "A")), "0.60")
+
+    def test_observed_display_precision_starts_at_zero_until_fractional_data(self):
+        self.assertEqual(ipmi_mqtt_core.observed_display_precision("19"), 0)
+        self.assertEqual(ipmi_mqtt_core.observed_display_precision("19.0"), 0)
+        self.assertEqual(ipmi_mqtt_core.observed_display_precision("19.5"), 1)
+        self.assertEqual(ipmi_mqtt_core.observed_display_precision("0.60"), 2)
+
+    def test_pyghmi_discovery_strips_reported_unit_from_name(self):
+        sdrs = ipmi_mqtt_core.pyghmi_readings_to_sdrs([
+            Reading("FAN MOD 1A RPM", 2760.0, "RPM"),
+            Reading("Ambient Temp", 19.0, "°C"),
+            Reading("Line 12V", 12.0, "V"),
+            Reading("Voltage V", 12.0, "V"),
+        ])
+        topics = {sdr["SDR_TOPIC"]: sdr for sdr in sdrs}
+
+        self.assertIn("FAN MOD 1A", topics)
+        self.assertNotIn("FAN MOD 1A RPM", topics)
+        self.assertEqual(topics["FAN MOD 1A"]["SDR_NAME"], "FAN MOD 1A")
+        self.assertEqual(topics["FAN MOD 1A"]["VALUE"], "2760.0")
+        self.assertEqual(topics["Ambient Temp"]["SDR_NAME"], "Ambient Temp")
+        self.assertEqual(topics["Ambient Temp"]["VALUE"], "19.0")
+        self.assertIn("Line 12V", topics)
+        self.assertIn("Voltage", topics)
+
+    def test_configured_pyghmi_sdr_default_name_strips_reported_unit(self):
+        engine = ipmi_mqtt_core.SensorUpdateEngine(FakeBackend())
+        readings = engine.dell_snapshot_from_readings(
+            {
+                "SDRS": [{
+                    "SDR_TYPE": 6,
+                    "SDR_CLASS": "fan",
+                    "SUBCLASS": "FAN MOD 1A RPM",
+                }],
+            },
+            "DELL-IDRAC6",
+            {6: "dell_fan_mod_1a_rpm"},
+            [Reading("FAN MOD 1A RPM", 2760.0, "RPM")],
+        )
+
+        self.assertEqual(readings[0]["topic"], "dell_fan_mod_1a_rpm")
+        self.assertEqual(readings[0]["name"], "FAN MOD 1A")
+        self.assertEqual(readings[0]["value"], "2760.0")
+
+    def test_dell_precision_cache_only_raises_display_precision(self):
+        engine = ipmi_mqtt_core.SensorUpdateEngine(FakeBackend())
+        first = [{"topic": "Ambient_Temp", "value": "19.0", "source": {}, "name": "Ambient Temp", "class": "temperature"}]
+        second = [{"topic": "Ambient_Temp", "value": "19.0", "source": {}, "name": "Ambient Temp", "class": "temperature"}]
+        third = [{"topic": "Ambient_Temp", "value": "19.5", "source": {}, "name": "Ambient Temp", "class": "temperature"}]
+        fourth = [{"topic": "Ambient_Temp", "value": "20.0", "source": {}, "name": "Ambient Temp", "class": "temperature"}]
+
+        changed, _stale = engine.dell_changes_from_readings("DELL-IDRAC6", first)
+        self.assertEqual(changed[0]["display_precision"], 0)
+        changed, _stale = engine.dell_changes_from_readings("DELL-IDRAC6", second)
+        self.assertEqual(changed, [])
+        changed, _stale = engine.dell_changes_from_readings("DELL-IDRAC6", third)
+        self.assertEqual(changed[0]["display_precision"], 1)
+        changed, _stale = engine.dell_changes_from_readings("DELL-IDRAC6", fourth)
+        self.assertEqual(changed[0]["display_precision"], 1)
+
+    def test_pyghmi_discovery_deduplicates_after_unit_stripping(self):
+        sdrs = ipmi_mqtt_core.pyghmi_readings_to_sdrs([
+            Reading("Voltage V", 12.0, "V"),
+            Reading("Voltage", 12.0, "V"),
+        ])
+
+        self.assertEqual([sdr["SDR_TOPIC"] for sdr in sdrs], ["Voltage 1", "Voltage 2"])
 
     def test_mqtt_safe_identifier_normalizes_guid_for_topic_ids(self):
         self.assertEqual(
@@ -282,10 +355,12 @@ class DellParserTest(unittest.TestCase):
         self.assertEqual(current_payload["unit_of_meas"], "A")
         self.assertEqual(current_payload["state_class"], "measurement")
         self.assertEqual(current_payload["icon"], "mdi:current-ac")
+        self.assertEqual(current_payload["suggested_display_precision"], 2)
         self.assertEqual(power_payload["device_class"], "power")
         self.assertEqual(power_payload["unit_of_meas"], "W")
         self.assertEqual(power_payload["state_class"], "measurement")
         self.assertEqual(power_payload["icon"], "mdi:flash")
+        self.assertEqual(power_payload["suggested_display_precision"], 0)
 
         state_payloads = {topic: payload for topic, payload, _qos, _retain in client.published if topic.endswith("/state")}
         self.assertEqual(state_payloads["homeassistant/sensor/server-guid/dell_psu_current/state"], "0.60")
@@ -539,6 +614,59 @@ class DellParserTest(unittest.TestCase):
             ("homeassistant/sensor/DELL-IDRAC6/System_Level/state", "301", 2, True),
             client.published,
         )
+
+    def test_dell_discovery_precision_updates_after_fractional_value(self):
+        class PublishResult:
+            def wait_for_publish(self):
+                return True
+
+        class Client:
+            def __init__(self):
+                self.published = []
+
+            def publish(self, topic, payload, qos=0, retain=False):
+                self.published.append((topic, payload, qos, retain))
+                return PublishResult()
+
+        client = Client()
+        server = {
+            "IPMI_NODENAME": "DELL-IDRAC6",
+            "BRAND": "DELL",
+            "IPMI_IP": "192.0.2.10",
+            "SDRS": [{
+                "SDR_TYPE": "Ambient Temp",
+                "SDR_TOPIC": "Ambient Temp",
+                "SDR_CLASS": "temperature",
+                "SUBCLASS": "Ambient Temp",
+            }],
+        }
+
+        self.ipmi_mqtt.sensor_update_engine.backend = FakeBackend([
+            [Reading("Ambient Temp", 19.0, "°C")],
+            [Reading("Ambient Temp", 19.5, "°C")],
+        ])
+        self.ipmi_mqtt.publish_dell_sensor_cycle(
+            server,
+            {"192.0.2.10": "DELL-IDRAC6"},
+            {},
+            "homeassistant/sensor",
+            client,
+            "mqtt.example",
+        )
+        first_payloads = {topic: json.loads(payload) for topic, payload, _qos, _retain in client.published if topic.endswith("/config")}
+        self.assertEqual(first_payloads["homeassistant/sensor/DELL-IDRAC6/Ambient_Temp/config"]["suggested_display_precision"], 0)
+
+        client.published.clear()
+        self.ipmi_mqtt.publish_dell_sensor_cycle(
+            server,
+            {"192.0.2.10": "DELL-IDRAC6"},
+            {},
+            "homeassistant/sensor",
+            client,
+            "mqtt.example",
+        )
+        second_payloads = {topic: json.loads(payload) for topic, payload, _qos, _retain in client.published if topic.endswith("/config")}
+        self.assertEqual(second_payloads["homeassistant/sensor/DELL-IDRAC6/Ambient_Temp/config"]["suggested_display_precision"], 1)
 
     def test_power_state_name_is_human_readable(self):
         class PublishResult:
