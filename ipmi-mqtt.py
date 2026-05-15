@@ -1,10 +1,8 @@
 #!/bin/python 
 # Las dependencias:
-from logging import NullHandler
-from multiprocessing.connection import wait
 import yaml
 import json
-import subprocess
+import socket
 import argparse
 import paho.mqtt.client as mqtt
 import time
@@ -14,8 +12,11 @@ import daemon
 import logging
 import logging.handlers as handlers
 import re
+import ipmi_mqtt_core as core
 
 dell_discovery_cache = {}
+sensor_update_engine = core.SensorUpdateEngine(core.PyghmiBackend())
+poll_metrics = core.PollMetrics()
 # First we define all the functions
 # YAML config loading function
 def load_config():
@@ -60,12 +61,7 @@ def on_message(client, userdata, msg):
             topic_parts = msg.topic.split("/")
             server_guid = topic_parts[-3]
             server_dict = complete_guid_dict[server_guid]
-            server_ip = server_dict["server_ip"]
-            server_user = server_dict["server_user"]
-            server_pass = server_dict["server_pass"]
-            ipmi_power_command = f"ipmitool -I lanplus -L Administrator -H \"{server_ip}\" -U \"{server_user}\" -P \"{server_pass}\" chassis power on"
-            logging.debug(f"We are sending the following ipmi command: {ipmi_power_command}")
-            subprocess.run(ipmi_power_command, shell=True, capture_output=True)
+            sensor_update_engine.backend.session_for(server_dict).set_power("on")
             clean_topic_dict = {msg.topic: ""}
             mqtt_publish_dict(clean_topic_dict, client, mqtt_ip)
             get_single_power_data(complete_guid_dict, server_guid, topic_dict, ha_binary_topic, power_topic, client, mqtt_ip)
@@ -73,12 +69,7 @@ def on_message(client, userdata, msg):
             topic_parts = msg.topic.split("/")
             server_guid = topic_parts[-3]
             server_dict = complete_guid_dict[server_guid]
-            server_ip = server_dict["server_ip"]
-            server_user = server_dict["server_user"]
-            server_pass = server_dict["server_pass"]
-            ipmi_power_command = f"ipmitool -I lanplus -L Administrator -H \"{server_ip}\" -U \"{server_user}\" -P \"{server_pass}\" chassis power off"
-            logging.debug(f"We are sending the following ipmi command: {ipmi_power_command}")
-            subprocess.run(ipmi_power_command, shell=True, capture_output=True) 
+            sensor_update_engine.backend.session_for(server_dict).set_power("off")
             clean_topic_dict = {msg.topic: ""}
             mqtt_publish_dict(clean_topic_dict, client, mqtt_ip)
             get_single_power_data(complete_guid_dict, server_guid, topic_dict, ha_binary_topic, power_topic, client, mqtt_ip)
@@ -106,90 +97,21 @@ def switch_subscribe(topic_dict, server_config, guid_dict, ha_switch_topic, swit
 def on_subscribe(client, userdata, mid, granted_qos):
     logging.info(f"The server has acknowledged your subscription requested on mid {mid} with qos {granted_qos}")
 def mqtt_safe_identifier(identifier):
-    identifier = re.sub(r'[^A-Za-z0-9_-]+', '_', str(identifier).strip())
-    identifier = re.sub(r'_+', '_', identifier).strip('_')
-    return identifier
+    return core.mqtt_safe_identifier(identifier)
 def mqtt_path_segment(identifier):
-    return mqtt_safe_identifier(identifier)
+    return core.mqtt_path_segment(identifier)
 def ha_unique_id(*parts):
-    return mqtt_safe_identifier("_".join(str(part) for part in parts if str(part) != ""))
+    return core.ha_unique_id(*parts)
 def mqtt_display_name(value):
-    value = str(value).strip()
-    if value == "":
-        return value
-    return re.sub(r'[_-]+', ' ', value).title()
+    return core.mqtt_display_name(value)
 def power_display_name(power_topic):
-    if power_topic == "server_power_state":
-        return "Power State"
-    return mqtt_display_name(power_topic)
+    return core.power_display_name(power_topic)
 def sdr_display_name(sensor_name, sdr_class):
-    sensor_name = str(sensor_name).strip()
-    if sensor_name == "":
-        return sensor_name
-    domain_names = {
-        "temperature": ("Temperature", ("temp", "temperature")),
-        "temperaturef": ("Temperature", ("temp", "temperature")),
-        "voltage": ("Voltage", ("volt", "voltage")),
-        "current": ("Current", ("amp", "current")),
-        "power": ("Power", ("watt", "power")),
-        "fan": ("Fan", ("fan", "rpm")),
-        "frequency": ("Frequency", ("frequency", "hz")),
-    }
-    domain_name, domain_tokens = domain_names.get(str(sdr_class), ("", ()))
-    lower_name = sensor_name.lower()
-    if domain_name != "" and not any(token in lower_name for token in domain_tokens):
-        return f"{sensor_name} {domain_name}"
-    return sensor_name
+    return core.sdr_display_name(sensor_name, sdr_class)
 def sensor_icon_for_class(sdr_class):
-    icons = {
-        "temperature": "mdi:thermometer",
-        "temperaturef": "mdi:thermometer",
-        "voltage": "mdi:sine-wave",
-        "current": "mdi:current-ac",
-        "power": "mdi:flash",
-        "fan": "mdi:fan",
-        "frequency": "mdi:sine-wave",
-    }
-    return icons.get(str(sdr_class), "")
+    return core.sensor_icon_for_class(sdr_class)
 def sensor_payload_for_class(device_mqtt_config, sdr_name, unique_id, sdr_class, state_topic):
-    payload = {
-        "device": device_mqtt_config,
-        "name": sdr_name,
-        "unique_id": unique_id,
-        "force_update": True,
-        "retain": True,
-        "state_topic": state_topic,
-    }
-    icon = sensor_icon_for_class(sdr_class)
-    if icon != "":
-        payload["icon"] = icon
-    if sdr_class == "temperature":
-        payload["device_class"] = "temperature"
-        payload["unit_of_meas"] = "°C"
-        payload["state_class"] = "measurement"
-    elif sdr_class == "temperaturef":
-        payload["device_class"] = "temperature"
-        payload["unit_of_meas"] = "°F"
-        payload["state_class"] = "measurement"
-    elif sdr_class == "voltage":
-        payload["device_class"] = "voltage"
-        payload["unit_of_meas"] = "V"
-        payload["state_class"] = "measurement"
-    elif sdr_class == "current":
-        payload["device_class"] = "current"
-        payload["unit_of_meas"] = "A"
-        payload["state_class"] = "measurement"
-    elif sdr_class == "power":
-        payload["device_class"] = "power"
-        payload["unit_of_meas"] = "W"
-        payload["state_class"] = "measurement"
-    elif sdr_class == "fan":
-        payload["unit_of_meas"] = "RPM"
-    elif sdr_class == "frequency":
-        payload["device_class"] = "frequency"
-        payload["unit_of_meas"] = "Hz"
-        payload["state_class"] = "measurement"
-    return payload
+    return core.sensor_payload_for_class(device_mqtt_config, sdr_name, unique_id, sdr_class, state_topic)
 def mqtt_publish_dict(mqtt_dict, client, mqtt_ip):
     for x, y in mqtt_dict.items():
         publish_result = client.publish(str(x), str(y), qos=2, retain=True)
@@ -201,14 +123,21 @@ def mqtt_publish_dict(mqtt_dict, client, mqtt_ip):
         logging.debug("You have sent the following payload: " + str(y))
         logging.debug("To the following topic: " + str(x))
         logging.debug("On the server with IP: " + mqtt_ip)
+def publish_poll_metrics(ha_sensor_topic, client, mqtt_ip):
+    metric_payload = {}
+    for metric_name, value in poll_metrics.as_payload().items():
+        metric_payload[f"{ha_sensor_topic}/ipmi_mqtt/{metric_name}/state"] = value
+    mqtt_publish_dict(metric_payload, client, mqtt_ip)
 def get_mqtt(config):
     try:
         mqtt_dict = config['MQTT']
         mqtt_ip = mqtt_dict['MQTT_ip']
         mqtt_user = mqtt_dict['MQTT_USER']
         mqtt_pass = mqtt_dict['MQTT_PW']
-        mqtt_client_id = mqtt_dict['MQTT_ID']
-        period = mqtt_dict['TIME_PERIOD']
+        mqtt_client_id = mqtt_dict.get('MQTT_ID', 'ipmi-mqtt')
+        if str(mqtt_client_id) in ("", "ipmi-mqtt-server"):
+            mqtt_client_id = f"ipmi-mqtt-{socket.gethostname()}-{os.getpid()}"
+        period = float(mqtt_dict['TIME_PERIOD'])
         logging.debug("This is your mqtt dictionary:" + str(mqtt_dict))
         if 'HA_BINARY' in mqtt_dict:
             ha_binary_topic= mqtt_dict['HA_BINARY']
@@ -226,6 +155,12 @@ def get_mqtt(config):
     except Exception as exception:
         logging.critical(f'Your YAML is missing something in the MQTT section. You get the following error: {exception} ')
     return mqtt_ip, mqtt_user, mqtt_pass, period, ha_binary_topic, ha_sensor_topic, ha_switch_topic, mqtt_client_id
+def get_high_priority_period(config, period):
+    mqtt_dict = config.get('MQTT') or {}
+    configured_period = mqtt_dict.get('HIGH_PRIORITY_TIME_PERIOD', '')
+    if configured_period == "":
+        return period
+    return float(configured_period)
 def get_guid(server_config):
     try:
         guid_dict = {}
@@ -236,13 +171,19 @@ def get_guid(server_config):
             server_ip = server['IPMI_IP']
             server_user = server['IPMI_USER']
             server_pass = server['IPMI_PASSWORD']
-            ipmi_guid_command = f"ipmitool -I lanplus -H \"{server_ip}\" -L User -U \"{server_user}\" -P \"{server_pass}\" mc guid|grep -i guid"
-            ipmi_command_subprocess = subprocess.run(ipmi_guid_command, shell=True, capture_output=True)
-            ipmi_guid_pure = ipmi_command_subprocess.stdout.decode("utf-8") #I decode the shell output with UTF-8
+            ipmi_guid_pure = sensor_update_engine.backend.session_for(server).guid()
             if ipmi_guid_pure == '':
                 logging.error(f"The server {server_nodename} has returned no GUID when connected through IPMI. There probably is a connection error.")
             guid_dict[server_ip]=server_identifier
-            complete_guid_dict[server_identifier]={"server_ip": server_ip, "server_user": server_user, "server_pass": server_pass, "server_nodename": server_nodename} # I create a dictionnary with the server's identifier as the key for the whole server info
+            complete_guid_dict[server_identifier]={
+                "server_ip": server_ip,
+                "server_user": server_user,
+                "server_pass": server_pass,
+                "server_nodename": server_nodename,
+                "IPMI_IP": server_ip,
+                "IPMI_USER": server_user,
+                "IPMI_PASSWORD": server_pass,
+            } # I create a dictionnary with the server's identifier as the key for the whole server info
         logging.debug("The following server identifiers have been generated:" + str(guid_dict))
 
         return guid_dict, complete_guid_dict
@@ -276,83 +217,19 @@ def get_topics(config):
     logging.info(f'You have {sdr_count} SDRs in your YAML file.')           
     return topic_dict, power_topic, switch_topic, sdr_topic_types, sdr_count
 def get_sdr_topic(current_sdr, sdr_topic_types):
-    if 'SDR_TOPIC' in current_sdr:
-        return mqtt_path_segment(current_sdr['SDR_TOPIC'])
-    if 'SDR_TYPE' in current_sdr:
-        sdr_type = current_sdr['SDR_TYPE']
-        if sdr_type in sdr_topic_types:
-            return mqtt_path_segment(sdr_topic_types[sdr_type])
-        try:
-            int_sdr_type = int(sdr_type)
-            if int_sdr_type in sdr_topic_types:
-                return mqtt_path_segment(sdr_topic_types[int_sdr_type])
-        except Exception:
-            pass
-    if 'SUBCLASS' in current_sdr:
-        return mqtt_path_segment(current_sdr['SUBCLASS'])
-    return mqtt_path_segment(current_sdr['VALUE'])
+    return core.get_sdr_topic(current_sdr, sdr_topic_types)
 def parse_ipmi_sdr_row(server_sdr_state):
-    server_sdr_values = server_sdr_state.split("|")
-    if len(server_sdr_values) < 5:
-        return None
-    return {
-        "SUBCLASS": server_sdr_values[0].strip(),
-        "STATUS": server_sdr_values[2].strip(),
-        "VALUE": server_sdr_values[3].strip(),
-        "READING": server_sdr_values[4].strip(),
-    }
+    return core.parse_ipmi_sdr_row(server_sdr_state)
 def classify_sdr_reading(sensor_reading):
-    sensor_reading = sensor_reading.lower()
-    if "degrees c" in sensor_reading:
-        return "temperature"
-    if "degrees f" in sensor_reading:
-        return "temperaturef"
-    if "rpm" in sensor_reading:
-        return "fan"
-    if "amps" in sensor_reading:
-        return "current"
-    if "volts" in sensor_reading:
-        return "voltage"
-    if "watts" in sensor_reading:
-        return "power"
-    if "hz" in sensor_reading:
-        return "frequency"
-    return ""
+    return core.classify_sdr_reading(sensor_reading)
 def dell_sdrs_from_elist(server_sdr_state):
-    sdr_rows = []
-    topic_counts = {}
-    for server_sdr_line in server_sdr_state.splitlines():
-        sdr_row = parse_ipmi_sdr_row(server_sdr_line)
-        if sdr_row is None:
-            continue
-        sdr_class = classify_sdr_reading(sdr_row["READING"])
-        if sdr_row["STATUS"] != "ok" or sdr_class == "" or numeric_sdr_value(sdr_row["READING"]) == "":
-            continue
-        sdr_row["SDR_CLASS"] = sdr_class
-        sdr_row["SDR_TOPIC"] = (sdr_row["SUBCLASS"])
-        topic_counts[sdr_row["SDR_TOPIC"]] = topic_counts.get(sdr_row["SDR_TOPIC"], 0) + 1
-        sdr_rows.append(sdr_row)
-    sdrs = []
-    for sdr_row in sdr_rows:
-        sdr_topic = sdr_row["SDR_TOPIC"]
-        if topic_counts[sdr_topic] > 1:
-            sdr_topic = (f"{sdr_row['SUBCLASS']} {sdr_row['VALUE']}")
-        sdrs.append({
-            "SDR_TYPE": sdr_topic,
-            "SDR_TOPIC": sdr_topic,
-            "SDR_NAME": sdr_display_name(sdr_topic, sdr_row["SDR_CLASS"]),
-            "SDR_CLASS": sdr_row["SDR_CLASS"],
-            "SUBCLASS": sdr_row["SUBCLASS"],
-            "VALUE": sdr_row["VALUE"],
-        })
-    return sdrs
+    return core.dell_sdrs_from_elist(server_sdr_state)
 def get_dell_elist_full(server):
-    server_ip = str(server['IPMI_IP'])
-    server_user = str(server['IPMI_USER'])
-    server_pass = str(server['IPMI_PASSWORD'])
-    ipmi_sdr_command = f"ipmitool -I lanplus -L User -H \"{server_ip}\" -U \"{server_user}\" -P \"{server_pass}\" sdr elist full"
-    ipmi_command_subprocess = subprocess.run(ipmi_sdr_command, shell=True, capture_output=True)
-    return ipmi_command_subprocess.stdout.decode("utf-8").strip()
+    readings = sensor_update_engine.backend.session_for(server).sensor_readings()
+    rows = []
+    for sdr in core.pyghmi_readings_to_sdrs(readings):
+        rows.append(f"{sdr['SUBCLASS']} | | ok | {sdr['VALUE']} | {sdr['VALUE']} {getattr(sdr['READING'], 'units', '')}")
+    return "\n".join(rows)
 def discover_dell_sdrs(server):
     return dell_sdrs_from_elist(get_dell_elist_full(server))
 def get_server_sdrs(server):
@@ -362,16 +239,7 @@ def get_server_sdrs(server):
         return discover_dell_sdrs(server)
     return []
 def dell_matching_row(current_sdr, server_sdr_state):
-    sdr_subclass = current_sdr['SUBCLASS']
-    sdr_entity = str(current_sdr.get('VALUE', '')).strip()
-    server_sdr_values = server_sdr_state.split("\n")
-    server_sdr_values = list(filter(lambda x: x.split("|")[0].strip() == sdr_subclass if "|" in x else False, server_sdr_values))
-    if sdr_entity != "":
-        server_sdr_values = list(filter(lambda x: len(x.split("|")) > 3 and x.split("|")[3].strip() == sdr_entity, server_sdr_values))
-    if len(server_sdr_values) == 0:
-        logging.warning(f"The DELL SDR subclass {sdr_subclass} was not found in the IPMI output.")
-        return None
-    return server_sdr_values[0].split("|")
+    return core.dell_matching_row(current_sdr, server_sdr_state)
 def power_sdr_initialization(server_config, guid_dict, ha_binary_topic, power_topic, client, mqtt_ip):
     try:    
         if power_topic == "":
@@ -451,6 +319,40 @@ def sensor_sdr_initialization(server_config, guid_dict, sdr_topic_types, ha_sens
                     mqtt_publish_dict(sdr_payload, client, mqtt_ip)
     except Exception as exception:
         logging.error(f"There is an error in your SDR sensor collection. The error is the following: {exception}")
+def publish_dell_sensor_changes(server, server_identifier, changed_readings, stale_topics, ha_sensor_topic, client, mqtt_ip):
+    server_nodename = str(server['IPMI_NODENAME'])
+    device_mqtt_config = {"identifiers" : server_identifier, "configuration_url" : "http://" + server['IPMI_IP'], "manufacturer" : server['BRAND'], "name" : server_nodename}
+    current_topics = {}
+    all_topics = sensor_update_engine.discovery_cache.get(server_identifier, set())
+    for sdr_topic in all_topics:
+        server_mqtt_config_topic = ha_sensor_topic + "/" + server_identifier + "/" + sdr_topic + "/" + "config"
+        server_mqtt_state_topic = ha_sensor_topic + "/" + server_identifier + "/" + sdr_topic + "/" + "state"
+        current_topics[server_mqtt_config_topic] = server_mqtt_state_topic
+    for reading in changed_readings:
+        sdr_value = reading["value"]
+        sdr_class = reading["class"]
+        sdr_topic = reading["topic"]
+        sdr_name = reading["name"]
+        unique_id = ha_unique_id(server_identifier, "sdr", sdr_topic)
+        server_mqtt_config_topic = ha_sensor_topic + "/" + server_identifier + "/" + sdr_topic + "/" + "config"
+        server_mqtt_state_topic = ha_sensor_topic + "/" + server_identifier + "/" + sdr_topic + "/" + "state"
+        sensor_payload = sensor_payload_for_class(device_mqtt_config, sdr_name, unique_id, sdr_class, server_mqtt_state_topic)
+        mqtt_publish_dict({server_mqtt_state_topic: sdr_value}, client, mqtt_ip)
+        mqtt_publish_dict({server_mqtt_config_topic: json.dumps(sensor_payload)}, client, mqtt_ip)
+    previous_topics = dell_discovery_cache.get(server_identifier, {})
+    stale_config_topics = {
+        ha_sensor_topic + "/" + server_identifier + "/" + stale_topic + "/" + "config"
+        for stale_topic in stale_topics
+    }
+    stale_config_topics.update(set(previous_topics.keys()) - set(current_topics.keys()))
+    for stale_config_topic in stale_config_topics:
+        stale_state_topic = previous_topics.get(stale_config_topic, "")
+        if stale_state_topic == "":
+            stale_state_topic = stale_config_topic[:-len("/config")] + "/state"
+        mqtt_publish_dict({stale_config_topic: ""}, client, mqtt_ip)
+        if stale_state_topic != "":
+            mqtt_publish_dict({stale_state_topic: ""}, client, mqtt_ip)
+    dell_discovery_cache[server_identifier] = current_topics
 def publish_dell_sensor_cycle(server, guid_dict, sdr_topic_types, ha_sensor_topic, client, mqtt_ip):
     server_nodename = str(server['IPMI_NODENAME'])
     server_ip = str(server['IPMI_IP'])
@@ -458,37 +360,17 @@ def publish_dell_sensor_cycle(server, guid_dict, sdr_topic_types, ha_sensor_topi
     if server_identifier == "":
         logging.warning(f"DELL SDR sensor data collection for {server_nodename} has been skipped because no GUID was generated.")
         return
-    full_output = get_dell_elist_full(server)
-    if 'SDRS' in server and server['SDRS']:
-        sdr_list = server['SDRS']
-    else:
-        sdr_list = dell_sdrs_from_elist(full_output)
-    device_mqtt_config = {"identifiers" : server_identifier, "configuration_url" : "http://" + server['IPMI_IP'], "manufacturer" : server['BRAND'], "name" : server_nodename}
-    current_topics = {}
-    for current_sdr in sdr_list:
-        matching_row = dell_matching_row(current_sdr, full_output)
-        if matching_row is None:
-            continue
-        sdr_value = numeric_sdr_value(matching_row[4])
-        sdr_class = str(current_sdr.get('SDR_CLASS', ''))
-        sdr_type = get_sdr_topic(current_sdr, sdr_topic_types)
-        sdr_name = str(current_sdr.get('SDR_NAME', current_sdr.get('SUBCLASS', sdr_type)))
-        sdr_topic = sdr_type
-        unique_id = ha_unique_id(server_identifier, "sdr", sdr_type)
-        server_mqtt_config_topic = ha_sensor_topic + "/" + server_identifier + "/" + sdr_topic + "/" + "config"
-        server_mqtt_state_topic = ha_sensor_topic + "/" + server_identifier + "/" + sdr_topic + "/" + "state"
-        sensor_payload = sensor_payload_for_class(device_mqtt_config, sdr_name, unique_id, sdr_class, server_mqtt_state_topic)
-        current_topics[server_mqtt_config_topic] = server_mqtt_state_topic
-        mqtt_publish_dict({server_mqtt_state_topic: sdr_value}, client, mqtt_ip)
-        mqtt_publish_dict({server_mqtt_config_topic: json.dumps(sensor_payload)}, client, mqtt_ip)
-    previous_topics = dell_discovery_cache.get(server_identifier, {})
-    stale_config_topics = set(previous_topics.keys()) - set(current_topics.keys())
-    for stale_config_topic in stale_config_topics:
-        stale_state_topic = previous_topics.get(stale_config_topic, "")
-        mqtt_publish_dict({stale_config_topic: ""}, client, mqtt_ip)
-        if stale_state_topic != "":
-            mqtt_publish_dict({stale_state_topic: ""}, client, mqtt_ip)
-    dell_discovery_cache[server_identifier] = current_topics
+    if server_identifier not in dell_discovery_cache:
+        sensor_update_engine.reset_server(server_identifier)
+    changed_readings, stale_topics = sensor_update_engine.dell_changes(server, server_identifier, sdr_topic_types)
+    publish_dell_sensor_changes(server, server_identifier, changed_readings, stale_topics, ha_sensor_topic, client, mqtt_ip)
+def publish_dell_high_priority_cycle(server, guid_dict, sdr_topic_types, ha_sensor_topic, client, mqtt_ip):
+    server_ip = str(server['IPMI_IP'])
+    server_identifier = str("".join([guid_dict[server_ip]]))
+    if server_identifier == "":
+        return
+    changed_readings, stale_topics = sensor_update_engine.dell_target_changes(server, server_identifier, sdr_topic_types)
+    publish_dell_sensor_changes(server, server_identifier, changed_readings, stale_topics, ha_sensor_topic, client, mqtt_ip)
 def get_power_data(topic_dict, server_config, guid_dict, ha_binary_topic, power_topic, client, mqtt_ip):
     try:
         if power_topic == "":
@@ -502,12 +384,8 @@ def get_power_data(topic_dict, server_config, guid_dict, ha_binary_topic, power_
                 if server_guid == "":
                     logging.warning(f"Power sensor data collection for {server_nodename} has been skipped because no GUID was generated.")
                 else:
-                    server_user = server['IPMI_USER']
-                    server_pass = server['IPMI_PASSWORD']
                     server_mqtt_topic = ha_binary_topic + "/" + server_guid + "/" + mqtt_path_segment(power_topic) + "/" + "state"
-                    ipmi_power_command = f"ipmitool -I lanplus -L User -H \"{server_ip}\" -U \"{server_user}\" -P \"{server_pass}\" chassis power status | cut -b 18-20"
-                    ipmi_command_subprocess = subprocess.run(ipmi_power_command, shell=True, capture_output=True)
-                    server_power_state = ipmi_command_subprocess.stdout.decode("utf-8").strip()
+                    server_power_state = sensor_update_engine.backend.session_for(server).power_state()
                     power_states[server_guid] = server_power_state #I use the GUIDs as key with the server's power state as output
                     client.publish(server_mqtt_topic, server_power_state, qos=2, retain=True)
                     logging.debug("You have sent the following payload: " + str(server_power_state))
@@ -525,14 +403,9 @@ def get_single_power_data(complete_guid_dict, server_guid, topic_dict, ha_binary
         else:
             server_dict = complete_guid_dict[server_guid]
             server_ip = server_dict["server_ip"]
-            server_user = server_dict["server_user"]
-            server_pass = server_dict["server_pass"]
             server_nodename = server_dict["server_nodename"]
             server_mqtt_topic = ha_binary_topic + "/" + server_guid + "/" + mqtt_path_segment(power_topic) + "/" + "state"
-            ipmi_power_command = f"ipmitool -I lanplus -L User -H \"{server_ip}\" -U \"{server_user}\" -P \"{server_pass}\" chassis power status | cut -b 18-20"
-            ipmi_command_subprocess = subprocess.run(ipmi_power_command, shell=True, capture_output=True)
-            server_power_state = ipmi_command_subprocess.stdout.decode("utf-8").strip()
-            logging.debug(ipmi_power_command)
+            server_power_state = sensor_update_engine.backend.session_for(server_dict).power_state()
             client.publish(server_mqtt_topic, server_power_state, qos=2, retain=True)
             logging.debug("You have sent the following payload: " + str(server_power_state))
             logging.debug("To the power state topic: " + str(server_mqtt_topic))
@@ -603,13 +476,7 @@ def asus_ipmi_format(current_sdr, server_sdr_state):
     except Exception as exception:
         logging.critical(f'There was a problem getting SDR sensor states, specifically when trying to apply the formatting for ASUS servers. You get the following error: {exception} ')
 def numeric_sdr_value(sensor_reading):
-    sensor_reading = sensor_reading.strip()
-    if sensor_reading in ("", "Disabled", "No Reading"):
-        return ""
-    numeric_match = re.search(r'-?\d+(?:\.\d+)?', sensor_reading)
-    if numeric_match:
-        return numeric_match.group(0)
-    return ""
+    return core.numeric_sdr_value(sensor_reading)
 def dell_ipmi_format(current_sdr, server_sdr_state):
     try:
         sdr_subclass = current_sdr['SUBCLASS']
@@ -629,20 +496,14 @@ def dell_ipmi_format(current_sdr, server_sdr_state):
     except Exception as exception:
         logging.critical(f'There was a problem getting SDR sensor states, specifically when trying to apply the formatting for DELL servers. You get the following error: {exception} ')
 def get_sdr_data(current_sdr, server_ip, server_user, server_pass, sdr_topic_types, server_nodename, server):
-        try:
-            sdr_entity = current_sdr['VALUE']
-            ipmi_sdr_command = f"ipmitool -I lanplus -L User -H \"{server_ip}\" -U \"{server_user}\" -P \"{server_pass}\" sdr entity \"{sdr_entity}\""                            
-            ipmi_command_subprocess = subprocess.run(ipmi_sdr_command, shell=True, capture_output=True)
-            server_sdr_state = ipmi_command_subprocess.stdout.decode("utf-8").strip()
-            logging.debug(server_sdr_state)
-#           if server_sdr_state == 'No Reading'
-#                server_sdr_state = 0
-#            else:
-#                pass                           
-            sdr_type = get_sdr_topic(current_sdr, sdr_topic_types)
-            return server_sdr_state, sdr_type
-        except Exception as exception:
-            logging.critical(f'There was a problem getting SDR data. You get the following error: {exception} ')
+    try:
+        for reading in sensor_update_engine.backend.session_for(server).sensor_readings():
+            if core.sensor_matches_config(reading, current_sdr):
+                return core.pyghmi_value(reading), get_sdr_topic(current_sdr, sdr_topic_types)
+        logging.warning(f"The SDR {current_sdr.get('SUBCLASS', current_sdr.get('SDR_TOPIC', ''))} was not found in pyghmi sensor data for {server_nodename}.")
+        return "", get_sdr_topic(current_sdr, sdr_topic_types)
+    except Exception as exception:
+        logging.critical(f'There was a problem getting SDR data. You get the following error: {exception} ')
 def get_sdr_sensor_states(server_config, guid_dict, sdr_topic_types, ha_sensor_topic):
     try:
         sdr_states = {} #I create a dictionary for all the servers
@@ -659,22 +520,14 @@ def get_sdr_sensor_states(server_config, guid_dict, sdr_topic_types, ha_sensor_t
                 server_pass = str(server['IPMI_PASSWORD'])
                 if server['BRAND'] == 'DELL':
                     continue
-                sdr_list = get_server_sdrs(server)
+                sdr_list = sensor_update_engine.dell_snapshot(server, server_identifier, sdr_topic_types)
                 sdr_server_dict = {} # I create a dictionary with all of the servers values
                 for current_sdr in sdr_list:
-                    server_sdr_state, sdr_type = get_sdr_data(current_sdr, server_ip, server_user, server_pass, sdr_topic_types, server_nodename, server)
-                    if server_sdr_state == '':
+                    sdr_type = current_sdr["topic"]
+                    sdr_value = current_sdr["value"]
+                    if sdr_value == '':
                         logging.warning(f" Server {server_nodename} has returned no SDR information over IPMI, a connection problem is likely.")
                     else:
-                        if server['BRAND'] == 'SUPERMICRO':
-                            sdr_value = supermicro_ipmi_format(current_sdr, server_sdr_state)
-                        elif server['BRAND'] == 'ASUS':
-                            sdr_value = asus_ipmi_format(current_sdr, server_sdr_state)
-                        elif server['BRAND'] == 'DELL':
-                            sdr_value = dell_ipmi_format(current_sdr, server_sdr_state)
-                        if sdr_value == 'No' or sdr_value == 'Di':
-                            sdr_value = ""
-                            logging.warning(f"IPMI returned an empty value for server {server_nodename} it is likely the server is OFF and so no sensor data is being collected.")
                         sdr_topic = sdr_type
                         sdr_server_dict[sdr_type] = sdr_value
                         server_mqtt_state_topic = ha_sensor_topic + "/" + server_identifier + "/" + sdr_topic + "/" + "state"
@@ -704,6 +557,7 @@ def main(): # Here i have the main program
     #Create config variables
     global mqtt_ip, mqtt_user, mqtt_pass, period, guid_dict, complete_guid_dict, topic_dict, ha_binary_topic, power_topic, mqtt_client_id
     mqtt_ip, mqtt_user, mqtt_pass, period, ha_binary_topic, ha_sensor_topic, ha_switch_topic, mqtt_client_id = get_mqtt(config)
+    high_priority_period = get_high_priority_period(config, period)
     #Get GUID for each server through IPMI and SERVER IP DICT for each server based on GUID
     guid_dict, complete_guid_dict=get_guid(server_config)
     logging.debug(f"This is the server information organized by GUID: {str(complete_guid_dict)}")
@@ -748,8 +602,17 @@ def main(): # Here i have the main program
             logging.info("There is no switch topic to subscribe to.")
             pass
         #And now I run th main loop that will check for ipmi states and publish them
+        loop_periods = [value for value in (period, high_priority_period) if value > 0]
+        loop_period = min(loop_periods) if loop_periods else 0
+        full_next_at = time.monotonic()
+        high_priority_next_at = full_next_at
         while(True):
-            #Sensor data gathering
+            cycle_started_at = time.monotonic()
+            now = cycle_started_at
+            run_full = period == 0 or now >= full_next_at
+            run_high_priority = high_priority_period > 0 and now >= high_priority_next_at
+            if run_full:
+                #Sensor data gathering
                 # I get the power data from each server, one by one (following guid_dict order) and then send that data through mqtt to the mqtt server
                 get_power_data(topic_dict, server_config, guid_dict, ha_binary_topic, power_topic, client, mqtt_ip)
                 for server in server_config:
@@ -763,23 +626,40 @@ def main(): # Here i have the main program
                     logging.debug("These are the SDR States collected:" + str(sdr_states))
                 except Exception as exception:
                     logging.error(f"There is an error in your SDR sensor collection. The error is the following: {exception}")
-                if period == 0:  #If period set to 0, the script ends.
-                    logging.info("The time period in the YAML file is set to 0, so the script will end.")
-                    client.disconnect
-                    client.loop_stop()
-                    quit()
-                elif getattr(args,'o'):
-                    logging.info("Started in run once mode, so stopping now.")
-                    client.disconnect
-                    client.loop_stop()
-                    quit()
-                else:
-                    logging.info(f"Collection complete, will wait {period} seconds to start again")
-                    time.sleep(period)
+                full_next_at = core.advance_deadline(full_next_at, period, time.monotonic())
+                high_priority_next_at = core.advance_deadline(high_priority_next_at, high_priority_period, time.monotonic())
+            elif run_high_priority:
+                for server in server_config:
+                    if server['BRAND'] == 'DELL':
+                        publish_dell_high_priority_cycle(server, guid_dict, sdr_topic_types, ha_sensor_topic, client, mqtt_ip)
+                high_priority_next_at = core.advance_deadline(high_priority_next_at, high_priority_period, time.monotonic())
+            if period == 0:  #If period set to 0, the script ends.
+                logging.info("The time period in the YAML file is set to 0, so the script will end.")
+                client.disconnect
+                client.loop_stop()
+                quit()
+            elif getattr(args,'o'):
+                logging.info("Started in run once mode, so stopping now.")
+                client.disconnect
+                client.loop_stop()
+                quit()
+            else:
+                cycle_finished_at = time.monotonic()
+                active_period = period if run_full else high_priority_period
+                overrun = max(0, cycle_finished_at - cycle_started_at - active_period)
+                poll_metrics.record(cycle_finished_at - cycle_started_at, overrun)
+                publish_poll_metrics(ha_sensor_topic, client, mqtt_ip)
+                if overrun > 0:
+                    logging.warning(f"Collection took {cycle_finished_at - cycle_started_at:.3f}s and overran the configured {active_period:.3f}s period by {overrun:.3f}s.")
+                next_deadline = min(full_next_at, high_priority_next_at) if high_priority_period > 0 else full_next_at
+                delay = max(0, next_deadline - time.monotonic())
+                if delay > 0:
+                    time.sleep(delay)
+                logging.info(f"Collection complete, waited {delay:.3f} seconds for the next fixed-rate poll tick.")
 
 #Some code that sets default parameters before running the program.
 #We define some arguments to be parsed as well as help messages and description for the script.
-parser = argparse.ArgumentParser(description='This is a simple python script that uses IPMITools in order to connect to your servers, review their power states and SDRs, if defined, and then send them through mqtt to an mqtt broker in order for Home Assistant to use them. In order for it to work, you must have filled your mqtt connetion information and your IPMI server connection information.')
+parser = argparse.ArgumentParser(description='This is a simple python script that uses pyghmi in order to connect to your servers, review their power states and SDRs, if defined, and then send them through mqtt to an mqtt broker in order for Home Assistant to use them. In order for it to work, you must have filled your mqtt connetion information and your IPMI server connection information.')
 parser.add_argument('-i', action='store_true', help='Run once to only create the entities in your MQTT broker (and see them in home assistant).')
 parser.add_argument('-o', action='store_true', help='Run once and quit.')
 parser.add_argument('-d', action='store_true', help='Run as a daemon.')
