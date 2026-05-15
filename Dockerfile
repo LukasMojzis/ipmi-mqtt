@@ -7,14 +7,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ipmitool \
-    && rm -rf /var/lib/apt/lists/*
-
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY ipmi-mqtt.py ./
+COPY ipmi_mqtt_core.py ./
 COPY ["config/config - example.yaml", "./config/config.example.yaml"]
 
 VOLUME ["/app/config"]

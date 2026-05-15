@@ -7,6 +7,7 @@ MQTT:
     HA_SENSOR: 'homeassistant/sensor'
     HA_SWITCH: 'homeassistant/switch'
     TIME_PERIOD: 300 # Time to try to get new sensor values. Set to 0 for one time execution.
+    #HIGH_PRIORITY_TIME_PERIOD: 1 # Optional faster cadence for SDRS marked HIGH_PRIORITY or SDR_CLASS power.
 
 TOPICS:
     POWER: 'server_power_state' #This is to get the server's ON OFF state, if you don't want it just leave an empty string
@@ -133,3 +134,4 @@ SERVERS:
               SDR_CLASS: power
               SUBCLASS: System Level
               VALUE: 7.1
+              HIGH_PRIORITY: true

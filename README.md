@@ -1,7 +1,11 @@
 # ipmi-mqtt
 Python app for IPMI states to be sent to Home Assistant via MQTT
 
-This is a simple application that you can either run continuously in a predefined interval, run once (-o), use just to create your entities in home assistant through mqtt (-i) or run continuously as a daemon (-d). The scripts uses ipmi-tool to get IPMI sensor data (executing IPMITOOLs through the shell) from one or many servers and then republishes that data to MQTT in a format that Home Assistant automatically recognizes as devices, each with its own entities and switches so that the servers can be turned On or Off through IPMI.
+## Provenance
+
+This repository is maintained as a fork of the original `ipmi-mqtt` script with compatibility kept for the MQTT discovery and state topics used by existing Home Assistant installations. The current direction is to keep MQTT as a supported output while moving IPMI collection, sensor normalization, discovery diffing, and update emission into reusable core code that can also support future adapters.
+
+This is a simple application that you can either run continuously in a predefined interval, run once (-o), use just to create your entities in home assistant through mqtt (-i) or run continuously as a daemon (-d). The script uses persistent pyghmi IPMI sessions to get IPMI sensor data from one or many servers and then republishes that data to MQTT in a format that Home Assistant automatically recognizes as devices, each with its own entities and switches so that the servers can be turned On or Off through IPMI.
 
 If you want to use it as a service in linux or FreeBSD you can check the readme on the FreeBSD-service folder or the systemd-service folder in the repo and follow those instructions too. You can also run it with the container image published to GitHub Container Registry.
 
@@ -12,6 +16,8 @@ The container image is published as:
 ```
 ghcr.io/lukasmojzis/ipmi-mqtt:latest
 ```
+
+Container builds publish branch tags and release tags. The `latest` tag is reserved for the default branch; pull request builds validate the image without pushing it.
 
 Create your configuration file before starting the container:
 
@@ -37,29 +43,29 @@ The container expects its configuration at `/app/config/config.yaml`.
 
 The script requires:
 
-python and ipmitools to be installed on the server 
+python to be installed on the server 
 for linux (apt):
 ```
-sudo apt install python3 ipmitool python3-pip
+sudo apt install python3 python3-pip
 ```
 as well as the following modules with pip:
 
-yaml, paho-mqtt and python-daemon:
+yaml, paho-mqtt, python-daemon, and pyghmi:
 ```
-sudo pip install pyyaml paho-mqtt python-daemon
+sudo pip install pyyaml paho-mqtt python-daemon pyghmi
 ```
 
 for freebsd (pkg):
 
 ```
-pkg install python3 ipmitool
+pkg install python3
 ```
 
 as well as the following modules:
 
-yaml, paho-mqtt and python-daemon (which are all on ports):
+yaml, paho-mqtt, python-daemon, and pyghmi:
 ```
-pkg install py39-daemon py39-yaml py39-paho-mqtt
+pkg install py39-daemon py39-yaml py39-paho-mqtt py39-pyghmi
 ```
 
 Once installed, just copy this repo (you can use git clone), complete the YAML file and rename it config.yaml in the /config/ folder, make the script executable and run it.
@@ -85,6 +91,10 @@ MQTT:
 
 ```
 
+`TIME_PERIOD` accepts seconds and may be fractional. The poll loop uses fixed-rate deadlines, so it targets stable ticks instead of sleeping for `TIME_PERIOD` after each collection finishes. If a collection takes longer than the configured period, the next missed tick is skipped and the overrun is logged. This keeps the schedule predictable, but it cannot make IPMI return data faster than the BMC responds.
+
+`HIGH_PRIORITY_TIME_PERIOD` is optional. When set, SDRs marked `HIGH_PRIORITY: true` and SDRs with `SDR_CLASS: power` are read on that faster cadence between full snapshots. Poll cycle duration, overrun count, and related poll metrics are also published to MQTT under the Home Assistant sensor topic. If `MQTT_ID` is omitted or left as the example `ipmi-mqtt-server`, the runtime client ID is made unique with the container hostname and process ID to avoid duplicate-client disconnects.
+
 
     
 A topics configuration, which can have one POWER topic, an optional SWITCH topic and all of the SDRs (the name of the values that will be given to HA on the MQTT Broker), you must put one SDR type per type of SDR as you will reference them on the server configuration part. If `TOPICS` is omitted, read-only power state and supported sensor discovery are enabled; power control remains disabled unless `SWITCH` is explicitly configured.
@@ -103,14 +113,7 @@ TOPICS:
 
 ```
 
-On the SERVERS part, you can put as many servers as you wish  (I have 3), you must specify their nodename (the name you want to use for them), their brand (currently ASUS, SUPERMICRO or DELL), their IP, IPMI USER, PASSWORD and the SDR values for the sensors you want to use, if you don't know the SDR values of the sensors you can use:
-
-ipmitool -I lanplus -L User -H "server-ip" -U "ipmi_user" -P "server_pass" sdr elist full
-
-```
-ipmitool -I lanplus -L User -H "server-ip" -U "ipmi_user" -P "server_pass" sdr elist full
-
-```
+On the SERVERS part, you can put as many servers as you wish  (I have 3), you must specify their nodename (the name you want to use for them), their brand (currently ASUS, SUPERMICRO or DELL), their IP, IPMI USER, PASSWORD and the SDR values for the sensors you want to use. Runtime collection uses persistent pyghmi IPMI sessions. If `SDRS` is omitted, supported numeric sensors are discovered automatically from pyghmi sensor data.
 
 and you should get something like this (ASUS):
 
@@ -195,7 +198,15 @@ System Level     | 98h | ok  |  7.1 | 287 Watts
 
 For DELL servers, the fourth column is the SDR value and the first column is the SUBCLASS. Some DELL rows share the same SDR value, so configure both `VALUE` and `SUBCLASS`.
 
-For DELL 11th generation / iDRAC6 servers, `SDRS` is optional. If you configure only `IPMI_NODENAME`, `BRAND`, `IPMI_IP`, `IPMI_USER`, and `IPMI_PASSWORD`, the script publishes every visible numeric sensor from `sdr elist full`. The MQTT node path is derived from `IPMI_NODENAME`, so choose a node name that is unique in your infrastructure. Names are published as configured or discovered; MQTT path segments and Home Assistant IDs are only sanitized enough to be valid. Add `SDRS` only when you want to limit or override the published sensors.
+For DELL 11th generation / iDRAC6 servers, `SDRS` is optional. If you configure only `IPMI_NODENAME`, `BRAND`, `IPMI_IP`, `IPMI_USER`, and `IPMI_PASSWORD`, the script publishes every visible numeric sensor exposed by pyghmi. The MQTT node path is derived from `IPMI_NODENAME`, so choose a node name that is unique in your infrastructure. Names are published as configured or discovered; MQTT path segments and Home Assistant IDs are only sanitized enough to be valid. Add `SDRS` only when you want to limit or override the published sensors.
+
+DELL discovery is diffed between collection cycles. New or changed sensors publish their retained state and discovery payloads, unchanged sensors are left alone, and sensors that disappear from IPMI output have their retained discovery and state payloads cleared.
+
+On DELL/iDRAC6 with full SDR auto-discovery, the first pyghmi SDR cache warm-up can take several seconds. In that case a one-second `TIME_PERIOD` means “poll again on the next available fixed-rate tick,” not “guarantee one full SDR snapshot per second during warm-up.” Use the logs and poll metrics to confirm whether collection overruns the requested period on your BMC.
+
+## Home Assistant Direct Use
+
+The shared IPMI core is intentionally adapter-friendly, but this project does not currently ship a direct Home Assistant integration. MQTT remains the supported Home Assistant path because it can update entities through retained discovery and state messages without requiring a Home Assistant restart. A direct integration should only be added if it can use a reloadable config-entry style workflow and keep updates restart-free.
 
 
 to connect to your server and see all of the available sensors and their SDR value.
@@ -212,7 +223,7 @@ SERVERS:
         SDRS: # OPTIONAL FOR DELL 11TH GENERATION / iDRAC6; REQUIRED FOR ASUS AND SUPERMICRO
             - SDR_TYPE: TYPE OF SDR (a number to match the dictionary of types in topics)
               SDR_CLASS: ENTITY CLASS FOR HA (CAN BE temperature, temperaturef for fahrenheit, frequency, voltage, current, power or fan, units will be C, F, Hz, V, A, W or RPM accordingly)
-              SUBCLASS: IF IT'S AN ASUS OR DELL PLEASE CHECK THE NAME FOR THE SENSOR ON IPMITOOL AND PUT IT HERE, for example Mb Temp or Ambient Temp
+              SUBCLASS: SENSOR NAME AS EXPOSED BY THE BMC, for example Mb Temp or Ambient Temp
               VALUE: SDR VALUE 
 
 ```

@@ -1,11 +1,12 @@
 import importlib.util
 import json
 import pathlib
-import subprocess
 import sys
 import types
 import unittest
 from unittest import mock
+
+import ipmi_mqtt_core
 
 
 DELL_SDR_OUTPUT = """Temp             | 01h | ns  |  3.1 | Disabled
@@ -34,6 +35,70 @@ FAN MOD 5B RPM   | 3Ah | ok  |  7.1 | 2400 RPM
 FAN MOD 5A RPM   | 3Bh | ok  |  7.1 | 2400 RPM
 Ambient Temp     | 07h | ns  | 10.1 | Disabled
 Ambient Temp     | 08h | ns  | 10.2 | Disabled"""
+
+
+class Reading:
+    def __init__(self, name, value, units, unavailable=0):
+        self.name = name
+        self.value = value
+        self.units = units
+        self.unavailable = unavailable
+
+
+def readings_from_elist(output):
+    readings = []
+    unit_map = {
+        "temperature": "°C",
+        "temperaturef": "°F",
+        "fan": "RPM",
+        "current": "A",
+        "voltage": "V",
+        "power": "W",
+        "frequency": "Hz",
+    }
+    for sdr in ipmi_mqtt_core.dell_sdrs_from_elist(output):
+        match = ipmi_mqtt_core.dell_matching_row(sdr, output)
+        if match is None:
+            continue
+        readings.append(Reading(sdr["SUBCLASS"], ipmi_mqtt_core.numeric_sdr_value(match[4]), unit_map[sdr["SDR_CLASS"]]))
+    return readings
+
+
+class FakeSession:
+    def __init__(self, readings=None, guid="guid", powerstate="on"):
+        self._readings = list(readings or [])
+        self._guid = guid
+        self._powerstate = powerstate
+
+    def sensor_readings(self):
+        return list(self._readings)
+
+    def targeted_sensor_readings(self, names):
+        names = set(names)
+        return [reading for reading in self._readings if reading.name in names]
+
+    def guid(self):
+        return self._guid
+
+    def power_state(self):
+        return self._powerstate
+
+    def set_power(self, powerstate):
+        self._powerstate = powerstate
+
+
+class FakeBackend:
+    def __init__(self, reading_sets=None, guid="guid"):
+        self.reading_sets = list(reading_sets or [[]])
+        self.guid = guid
+        self.sessions = {}
+
+    def session_for(self, server):
+        key = str(server["IPMI_IP"])
+        readings = self.reading_sets.pop(0) if self.reading_sets else []
+        session = FakeSession(readings, guid=self.guid)
+        self.sessions[key] = session
+        return session
 
 
 def load_ipmi_mqtt_module():
@@ -75,6 +140,11 @@ class DellParserTest(unittest.TestCase):
 
     def setUp(self):
         self.ipmi_mqtt.dell_discovery_cache.clear()
+        self.ipmi_mqtt.sensor_update_engine.discovery_cache.clear()
+        self.ipmi_mqtt.sensor_update_engine.value_cache.clear()
+        self.ipmi_mqtt.sensor_update_engine.poll_count.clear()
+        self.ipmi_mqtt.sensor_update_engine.backend = FakeBackend([readings_from_elist(DELL_SDR_OUTPUT)])
+        self.ipmi_mqtt.poll_metrics = ipmi_mqtt_core.PollMetrics()
 
     def test_dell_parser_extracts_numeric_values(self):
         cases = (
@@ -121,15 +191,9 @@ class DellParserTest(unittest.TestCase):
             "IPMI_USER": "root",
             "IPMI_PASSWORD": "secret",
         }]
-        completed = subprocess.CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout=b"System GUID  : 44454c4c-3200-1046-8033-b2c04f39354a\n",
-            stderr=b"",
-        )
+        self.ipmi_mqtt.sensor_update_engine.backend = FakeBackend(guid="44454c4c320010468033b2c04f39354a")
 
-        with mock.patch.object(self.ipmi_mqtt.subprocess, "run", return_value=completed):
-            guid_dict, complete_guid_dict = self.ipmi_mqtt.get_guid(server_config)
+        guid_dict, complete_guid_dict = self.ipmi_mqtt.get_guid(server_config)
 
         self.assertEqual(guid_dict["192.0.2.10"], "Node_01_DELL-IDRAC6")
         self.assertIn("Node_01_DELL-IDRAC6", complete_guid_dict)
@@ -195,15 +259,14 @@ class DellParserTest(unittest.TestCase):
         guid_dict = {"192.0.2.10": "server-guid"}
         sdr_topic_types = {1: "dell_psu_current", 2: "dell_system_power"}
 
-        with mock.patch.object(self.ipmi_mqtt, "get_dell_elist_full", return_value=DELL_SDR_OUTPUT):
-            self.ipmi_mqtt.publish_dell_sensor_cycle(
-                server_config[0],
-                guid_dict,
-                sdr_topic_types,
-                "homeassistant/sensor",
-                client,
-                "mqtt.example",
-            )
+        self.ipmi_mqtt.publish_dell_sensor_cycle(
+            server_config[0],
+            guid_dict,
+            sdr_topic_types,
+            "homeassistant/sensor",
+            client,
+            "mqtt.example",
+        )
 
         payloads = {topic: json.loads(payload) for topic, payload, _qos, _retain in client.published}
         self.assertEqual(client.published[0][0], "homeassistant/sensor/server-guid/dell_psu_current/state")
@@ -256,15 +319,14 @@ class DellParserTest(unittest.TestCase):
             }],
         }]
 
-        with mock.patch.object(self.ipmi_mqtt, "get_dell_elist_full", return_value=DELL_SDR_OUTPUT):
-            self.ipmi_mqtt.publish_dell_sensor_cycle(
-                server_config[0],
-                {"192.0.2.10": "DELL-IDRAC6"},
-                {},
-                "homeassistant/sensor",
-                client,
-                "mqtt.example",
-            )
+        self.ipmi_mqtt.publish_dell_sensor_cycle(
+            server_config[0],
+            {"192.0.2.10": "DELL-IDRAC6"},
+            {},
+            "homeassistant/sensor",
+            client,
+            "mqtt.example",
+        )
 
         payloads = {topic: payload for topic, payload, _qos, _retain in client.published}
         voltage_payload = payloads["homeassistant/sensor/DELL-IDRAC6/Voltage_10_1/config"]
@@ -302,15 +364,14 @@ class DellParserTest(unittest.TestCase):
             }],
         }]
 
-        with mock.patch.object(self.ipmi_mqtt, "get_dell_elist_full", return_value=DELL_SDR_OUTPUT):
-            self.ipmi_mqtt.publish_dell_sensor_cycle(
-                server_config[0],
-                {"192.0.2.10": "DELL-IDRAC6"},
-                {},
-                "homeassistant/sensor",
-                client,
-                "mqtt.example",
-            )
+        self.ipmi_mqtt.publish_dell_sensor_cycle(
+            server_config[0],
+            {"192.0.2.10": "DELL-IDRAC6"},
+            {},
+            "homeassistant/sensor",
+            client,
+            "mqtt.example",
+        )
 
         payloads = {topic: payload for topic, payload, _qos, _retain in client.published}
         fan_payload = payloads["homeassistant/sensor/DELL-IDRAC6/FAN_MOD_1A_RPM/config"]
@@ -351,15 +412,14 @@ class DellParserTest(unittest.TestCase):
             }],
         }
 
-        with mock.patch.object(self.ipmi_mqtt, "get_dell_elist_full", return_value=DELL_SDR_OUTPUT):
-            self.ipmi_mqtt.publish_dell_sensor_cycle(
-                server,
-                {"192.0.2.10": "DELL-IDRAC6"},
-                {},
-                "homeassistant/sensor",
-                client,
-                "mqtt.example",
-            )
+        self.ipmi_mqtt.publish_dell_sensor_cycle(
+            server,
+            {"192.0.2.10": "DELL-IDRAC6"},
+            {},
+            "homeassistant/sensor",
+            client,
+            "mqtt.example",
+        )
 
         self.assertIn(
             ("homeassistant/sensor/DELL-IDRAC6/old_metric/config", "", 2, True),
@@ -372,6 +432,112 @@ class DellParserTest(unittest.TestCase):
         self.assertEqual(
             self.ipmi_mqtt.dell_discovery_cache["DELL-IDRAC6"],
             {"homeassistant/sensor/DELL-IDRAC6/Current_10_1/config": "homeassistant/sensor/DELL-IDRAC6/Current_10_1/state"},
+        )
+
+    def test_unchanged_dell_sensor_cycle_does_not_republish(self):
+        class PublishResult:
+            def wait_for_publish(self):
+                return True
+
+        class Client:
+            def __init__(self):
+                self.published = []
+
+            def publish(self, topic, payload, qos=0, retain=False):
+                self.published.append((topic, payload, qos, retain))
+                return PublishResult()
+
+        client = Client()
+        server = {
+            "IPMI_NODENAME": "DELL-IDRAC6",
+            "BRAND": "DELL",
+            "IPMI_IP": "192.0.2.10",
+            "SDRS": [{
+                "SDR_TYPE": "System Level",
+                "SDR_TOPIC": "System Level",
+                "SDR_CLASS": "power",
+                "SUBCLASS": "System Level",
+                "VALUE": "7.1",
+            }],
+        }
+
+        self.ipmi_mqtt.sensor_update_engine.backend = FakeBackend([
+            readings_from_elist(DELL_SDR_OUTPUT),
+            readings_from_elist(DELL_SDR_OUTPUT),
+        ])
+        self.ipmi_mqtt.publish_dell_sensor_cycle(
+            server,
+            {"192.0.2.10": "DELL-IDRAC6"},
+            {},
+            "homeassistant/sensor",
+            client,
+            "mqtt.example",
+        )
+        client.published.clear()
+        self.ipmi_mqtt.publish_dell_sensor_cycle(
+            server,
+            {"192.0.2.10": "DELL-IDRAC6"},
+            {},
+            "homeassistant/sensor",
+            client,
+            "mqtt.example",
+        )
+
+        self.assertEqual(client.published, [])
+
+    def test_changed_dell_sensor_cycle_publishes_next_value(self):
+        class PublishResult:
+            def wait_for_publish(self):
+                return True
+
+        class Client:
+            def __init__(self):
+                self.published = []
+
+            def publish(self, topic, payload, qos=0, retain=False):
+                self.published.append((topic, payload, qos, retain))
+                return PublishResult()
+
+        client = Client()
+        server = {
+            "IPMI_NODENAME": "DELL-IDRAC6",
+            "BRAND": "DELL",
+            "IPMI_IP": "192.0.2.10",
+            "SDRS": [{
+                "SDR_TYPE": "System Level",
+                "SDR_TOPIC": "System Level",
+                "SDR_CLASS": "power",
+                "SUBCLASS": "System Level",
+                "VALUE": "7.1",
+            }],
+        }
+        changed_output = DELL_SDR_OUTPUT.replace("287 Watts", "301 Watts")
+
+        self.ipmi_mqtt.sensor_update_engine.backend = FakeBackend([
+            readings_from_elist(DELL_SDR_OUTPUT),
+            readings_from_elist(changed_output),
+        ])
+        self.ipmi_mqtt.publish_dell_sensor_cycle(
+            server,
+            {"192.0.2.10": "DELL-IDRAC6"},
+            {},
+            "homeassistant/sensor",
+            client,
+            "mqtt.example",
+        )
+        client.published.clear()
+        self.ipmi_mqtt.publish_dell_sensor_cycle(
+            server,
+            {"192.0.2.10": "DELL-IDRAC6"},
+            {},
+            "homeassistant/sensor",
+            client,
+            "mqtt.example",
+        )
+
+        self.assertIn(
+            ("homeassistant/sensor/DELL-IDRAC6/System_Level/state", "301", 2, True),
+            client.published,
         )
 
     def test_power_state_name_is_human_readable(self):
@@ -425,6 +591,165 @@ class DellParserTest(unittest.TestCase):
         )
 
         self.assertEqual(client.published, [])
+
+    def test_default_mqtt_client_id_is_unique(self):
+        config = {
+            "MQTT": {
+                "MQTT_ip": "mqtt.example",
+                "MQTT_USER": "user",
+                "MQTT_PW": "pass",
+                "MQTT_ID": "ipmi-mqtt-server",
+                "TIME_PERIOD": 1,
+                "HA_BINARY": "homeassistant/binary_sensor",
+                "HA_SENSOR": "homeassistant/sensor",
+            }
+        }
+
+        with mock.patch.object(self.ipmi_mqtt.socket, "gethostname", return_value="host"), \
+                mock.patch.object(self.ipmi_mqtt.os, "getpid", return_value=123):
+            mqtt_config = self.ipmi_mqtt.get_mqtt(config)
+
+        self.assertEqual(mqtt_config[-1], "ipmi-mqtt-host-123")
+
+    def test_high_priority_cycle_publishes_power_only(self):
+        class PublishResult:
+            def wait_for_publish(self):
+                return True
+
+        class Client:
+            def __init__(self):
+                self.published = []
+
+            def publish(self, topic, payload, qos=0, retain=False):
+                self.published.append((topic, payload, qos, retain))
+                return PublishResult()
+
+        first = readings_from_elist(DELL_SDR_OUTPUT)
+        changed = readings_from_elist(DELL_SDR_OUTPUT.replace("287 Watts", "301 Watts").replace("4920 RPM", "4800 RPM"))
+        self.ipmi_mqtt.sensor_update_engine.backend = FakeBackend([first, changed])
+        client = Client()
+        server = {
+            "IPMI_NODENAME": "DELL-IDRAC6",
+            "BRAND": "DELL",
+            "IPMI_IP": "192.0.2.10",
+            "SDRS": [
+                {"SDR_TYPE": "System Level", "SDR_TOPIC": "System Level", "SDR_CLASS": "power", "SUBCLASS": "System Level", "VALUE": "7.1"},
+                {"SDR_TYPE": "FAN MOD 1A RPM", "SDR_TOPIC": "FAN MOD 1A RPM", "SDR_CLASS": "fan", "SUBCLASS": "FAN MOD 1A RPM", "VALUE": "7.1"},
+            ],
+        }
+
+        self.ipmi_mqtt.publish_dell_sensor_cycle(
+            server,
+            {"192.0.2.10": "DELL-IDRAC6"},
+            {},
+            "homeassistant/sensor",
+            client,
+            "mqtt.example",
+        )
+        client.published.clear()
+        self.ipmi_mqtt.publish_dell_high_priority_cycle(
+            server,
+            {"192.0.2.10": "DELL-IDRAC6"},
+            {},
+            "homeassistant/sensor",
+            client,
+            "mqtt.example",
+        )
+
+        topics = [topic for topic, _payload, _qos, _retain in client.published]
+        self.assertIn("homeassistant/sensor/DELL-IDRAC6/System_Level/state", topics)
+        self.assertNotIn("homeassistant/sensor/DELL-IDRAC6/FAN_MOD_1A_RPM/state", topics)
+
+    def test_poll_metrics_publish_state_topics(self):
+        class PublishResult:
+            def wait_for_publish(self):
+                return True
+
+        class Client:
+            def __init__(self):
+                self.published = []
+
+            def publish(self, topic, payload, qos=0, retain=False):
+                self.published.append((topic, payload, qos, retain))
+                return PublishResult()
+
+        client = Client()
+        self.ipmi_mqtt.poll_metrics.record(1.25, 0.25)
+
+        self.ipmi_mqtt.publish_poll_metrics("homeassistant/sensor", client, "mqtt.example")
+
+        payloads = {topic: payload for topic, payload, _qos, _retain in client.published}
+        self.assertEqual(payloads["homeassistant/sensor/ipmi_mqtt/poll_cycles/state"], "1")
+        self.assertEqual(payloads["homeassistant/sensor/ipmi_mqtt/poll_overruns/state"], "1")
+        self.assertEqual(payloads["homeassistant/sensor/ipmi_mqtt/poll_last_cycle_seconds/state"], "1.250")
+
+
+class CoreBackendTest(unittest.TestCase):
+    def test_pyghmi_backend_reuses_and_reconnects_session(self):
+        class Command:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        backend = ipmi_mqtt_core.PyghmiBackend(command_factory=Command)
+        server = {"IPMI_IP": "192.0.2.10", "IPMI_USER": "root", "IPMI_PASSWORD": "secret"}
+
+        first = backend.session_for(server)
+        second = backend.session_for(server)
+        reconnected = backend.reconnect(server)
+
+        self.assertIs(first, second)
+        self.assertIsNot(first, reconnected)
+
+    def test_engine_tracks_discovery_and_fallback_poll_count(self):
+        class Backend:
+            def session_for(self, server):
+                raise AssertionError("not used by direct reading test")
+
+        engine = ipmi_mqtt_core.SensorUpdateEngine(Backend(), fallback_interval=2)
+        readings = [{
+            "server_identifier": "server",
+            "topic": "Ambient_Temp",
+            "value": "20",
+            "name": "Ambient Temp",
+            "class": "temperature",
+            "source": {},
+        }]
+
+        changed, stale = engine.dell_changes_from_readings("server", readings)
+        unchanged, stale_second = engine.dell_changes_from_readings("server", readings)
+
+        self.assertEqual(changed, readings)
+        self.assertEqual(unchanged, [])
+        self.assertEqual(stale, set())
+        self.assertEqual(stale_second, set())
+        self.assertEqual(engine.poll_count["server"], 2)
+
+    def test_fixed_rate_timer_uses_absolute_deadlines(self):
+        now = [100.0]
+        timer = ipmi_mqtt_core.FixedRateTimer(5, clock=lambda: now[0], sleeper=lambda delay: None)
+
+        now[0] = 102.0
+        self.assertEqual(timer.delay_until_next(), 3.0)
+        now[0] = 106.2
+        self.assertAlmostEqual(timer.delay_until_next(), 3.8)
+
+    def test_fixed_rate_timer_reports_overrun(self):
+        timer = ipmi_mqtt_core.FixedRateTimer(1, clock=lambda: 0, sleeper=lambda delay: None)
+
+        self.assertEqual(timer.overrun(10.0, 10.5), 0)
+        self.assertAlmostEqual(timer.overrun(10.0, 12.25), 1.25)
+
+
+class ContainerWorkflowTest(unittest.TestCase):
+    def test_container_workflow_tags_branch_release_and_default_latest(self):
+        repo_root = pathlib.Path(__file__).resolve().parents[1]
+        workflow = (repo_root / ".github" / "workflows" / "container-image.yml").read_text()
+
+        self.assertIn('branches:\n      - "**"', workflow)
+        self.assertIn("type=ref,event=branch", workflow)
+        self.assertIn("type=semver,pattern={{version}}", workflow)
+        self.assertIn("type=raw,value=latest,enable={{is_default_branch}}", workflow)
+        self.assertIn("push: ${{ github.event_name != 'pull_request' }}", workflow)
 
 
 if __name__ == "__main__":

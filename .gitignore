@@ -5,5 +5,6 @@ config.yaml
 ipmi-mqtt.log
 config/config.yaml
 config/ipmi-mqtt.log
+benchmarks/
 
 /.vscode
